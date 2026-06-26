@@ -1,0 +1,286 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R 9 0 R 11 0 R 13 0 R] /Count 5 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Length 2203 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+(Audit Trail - Request a64616e1-76a3-4b5e-88d6-abbd3edf7dc5) Tj
+0 -16 Td(Generated 18/06/2026, 10:01:50) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(status: requester_confirmation -> completed) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(completion_date: 2026-06-18T08:18:14.399Z -> 2026-06-18T08:18:42.962Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(lead_time_hours: 0.20 -> 0.21) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(reception_condition: - -> ok) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(reception_confirmed_at: - -> 2026-06-18T08:18:42.962Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(reception_confirmed_by: - -> Demo Requester) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:42 | Demo Requester | requester | request_completed) Tj
+0 -16 Td(requester_confirmation: No -> Yes) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:14 | Tech Operator | technician | waiting_customer_confirmation) Tj
+0 -16 Td(status: ready_for_pickup -> requester_confirmation) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:14 | Tech Operator | technician | waiting_customer_confirmation) Tj
+0 -16 Td(ready_at: 2026-06-18T08:17:27.955Z -> 2026-06-18T08:18:14.399Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:14 | Tech Operator | technician | waiting_customer_confirmation) Tj
+0 -16 Td(completion_date: - -> 2026-06-18T08:18:14.399Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:18:14 | Tech Operator | technician | waiting_customer_confirmation) Tj
+0 -16 Td(lead_time_hours: - -> 0.20) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:11 | Tech Operator | technician | quality_check_started) Tj
+0 -16 Td(status: printed -> quality_check) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:11 | Tech Operator | technician | quality_check_started) Tj
+0 -16 Td(qc_started_at: - -> 2026-06-18T08:17:11.612Z) Tj
+0 -16 Td() Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 2019 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+(18/06/2026, 09:17:04 | Tech Operator | technician | request_printed) Tj
+0 -16 Td(status: in_progress -> printed) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:04 | Tech Operator | technician | request_printed) Tj
+0 -16 Td(actual_cost: - -> 22.17) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:04 | Tech Operator | technician | request_printed) Tj
+0 -16 Td(actual_duration: - -> 0.03) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:04 | Tech Operator | technician | request_printed) Tj
+0 -16 Td(actual_end_time: - -> 2026-06-18T08:17:04.864Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:04 | Tech Operator | technician | request_printed) Tj
+0 -16 Td(printed_quantity: 0 -> 15) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:17:04 | Tech Operator | technician | request_printed) Tj
+0 -16 Td(material_used_grams: - -> 500.00) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:15:19 | Tech Operator | technician | production_started) Tj
+0 -16 Td(status: assigned -> in_progress) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:15:19 | Tech Operator | technician | production_started) Tj
+0 -16 Td(actual_start_time: - -> 2026-06-18T08:15:19.200Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:22 | Wael Charaabi | coordinator | request_assigned) Tj
+0 -16 Td(status: planned -> assigned) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:22 | Wael Charaabi | coordinator | request_assigned) Tj
+0 -16 Td(assigned_at: - -> 2026-06-18T08:13:22.361Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:22 | Wael Charaabi | coordinator | request_assigned) Tj
+0 -16 Td(assigned_technician_id: - -> Tech Operator) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(status: prioritized -> planned) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(printer_id: - -> Printer-03) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(material_id: - -> PLA White White) Tj
+0 -16 Td() Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 2086 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(price_per_kg: - -> 24.58) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(estimated_cost: - -> 23.13) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(planned_end_date: - -> 2026-06-18T23:00:00.000Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(material_reserved: No -> Yes) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(planned_start_date: - -> 2026-06-18T23:00:00.000Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(material_reserved_at: - -> 2026-06-18T08:13:08.054Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(material_reserved_by: - -> Wael Charaabi) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(material_reserved_qty: - -> 500.00) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(estimated_printing_time: - -> 70.00) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:13:08 | Wael Charaabi | coordinator | request_planned) Tj
+0 -16 Td(material_reserved_spool: - -> 7525) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:54 | Wael Charaabi | coordinator | request_prioritized) Tj
+0 -16 Td(status: approved -> prioritized) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:47 | Wael Charaabi | coordinator | request_approved) Tj
+0 -16 Td(status: feasibility_review -> approved) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:47 | Wael Charaabi | coordinator | request_approved) Tj
+0 -16 Td(approved_at: - -> 2026-06-18T08:10:47.763Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:47 | Wael Charaabi | coordinator | request_approved) Tj
+0 -16 Td(sla_breach_at: - -> 2026-06-18T23:00:00.000Z) Tj
+0 -16 Td() Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 1989 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+(18/06/2026, 09:10:47 | Wael Charaabi | coordinator | request_approved) Tj
+0 -16 Td(business_impact: - -> medium) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:47 | Wael Charaabi | coordinator | request_approved) Tj
+0 -16 Td(approved_due_date: - -> 2026-06-18T23:00:00.000Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:15 | Wael Charaabi | coordinator | feasibility_review) Tj
+0 -16 Td(status: completeness_check -> feasibility_review) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:10:11 | Wael Charaabi | coordinator | completeness_check) Tj
+0 -16 Td(status: submitted -> completeness_check) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:13 | Demo Requester | requester | request_submitted) Tj
+0 -16 Td(status: draft -> submitted) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:13 | Demo Requester | requester | request_submitted) Tj
+0 -16 Td(submitted_at: - -> 2026-06-18T08:06:13.898Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:13 | Demo Requester | requester | request_submitted) Tj
+0 -16 Td(status_comment: - -> Request submitted by requester) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(title: - -> fffff) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(status: - -> draft) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(priority: - -> high) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(quantity: - -> 15) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(scrap_count: - -> 0) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(final_quantity: - -> 0) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(request_number: - -> 3DP-2026-0039) Tj
+0 -16 Td() Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 1273 >>
+stream
+BT
+/F1 9 Tf
+50 760 Td
+(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(priority_reason: - -> kdffdkkfdfdk) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(rework_required: - -> No) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(printed_quantity: - -> 0) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(reprint_quantity: - -> 0) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(rejected_quantity: - -> 0) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(requested_due_date: - -> 2026-06-20T23:00:00.000Z) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(production_stop_risk: - -> No) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(requester_confirmation: - -> No) Tj
+0 -16 Td() Tj
+0 -16 Td(18/06/2026, 09:06:12 | Demo Requester | requester | request_created) Tj
+0 -16 Td(status_comment: - -> Request created) Tj
+0 -16 Td() Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 12 0 R >>
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000141 00000 n 
+0000000211 00000 n 
+0000002466 00000 n 
+0000002592 00000 n 
+0000004663 00000 n 
+0000004789 00000 n 
+0000006927 00000 n 
+0000007053 00000 n 
+0000009095 00000 n 
+0000009223 00000 n 
+0000010549 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R >>
+startxref
+10677
+%%EOF

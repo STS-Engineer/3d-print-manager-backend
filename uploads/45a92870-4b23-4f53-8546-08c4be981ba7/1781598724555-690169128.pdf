@@ -1,0 +1,111 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Length 3007 >>
+stream
+BT /F2 18 Tf 50 760 Td (3D Print Request 3DP-2026-0033) Tj ET
+BT /F1 9 Tf 50 734 Td (Genere le 16/06/2026 08:30) Tj ET
+BT /F2 12 Tf 50 710 Td (Demande) Tj ET
+BT /F1 10 Tf 50 692 Td (Numero de demande: 3DP-2026-0033) Tj ET
+BT /F1 10 Tf 50 678 Td (Titre: Prototype Housing for IoT Monitoring Device) Tj ET
+BT /F1 10 Tf 50 664 Td (Statut: requester_confirmation) Tj ET
+BT /F1 10 Tf 50 650 Td (Priorite: normal) Tj ET
+BT /F1 10 Tf 50 636 Td (Site: SAME) Tj ET
+BT /F1 10 Tf 50 622 Td (Cree le: 12/06/2026 10:40) Tj ET
+BT /F2 12 Tf 50 602 Td (Informations du requester) Tj ET
+BT /F1 10 Tf 50 584 Td (Nom: Demo Requester) Tj ET
+BT /F1 10 Tf 50 570 Td (Email: requester@avocarbon.com) Tj ET
+BT /F1 10 Tf 50 556 Td (Departement: Production) Tj ET
+BT /F1 10 Tf 50 542 Td (Reference projet: IOT-MONITOR-V2) Tj ET
+BT /F1 10 Tf 50 528 Td (Reference client: RND-2026-008) Tj ET
+BT /F2 12 Tf 50 508 Td (Description) Tj ET
+BT /F1 10 Tf 50 490 Td (Purpose: Produce a prototype enclosure for a new IoT monitoring device to validate assembly,) Tj ET
+BT /F1 10 Tf 50 476 Td (ergonomics, and internal component fit before mass production.) Tj ET
+BT /F1 10 Tf 50 462 Td (Description piece: Two-piece enclosure consisting of a top cover and bottom housing with screw) Tj ET
+BT /F1 10 Tf 50 448 Td (mounting points, ventilation slots, cable entry openings, and space for a PCB and battery pack.) Tj ET
+BT /F1 10 Tf 50 434 Td (Quantite: 1) Tj ET
+BT /F1 10 Tf 50 420 Td (Categorie: Prototype) Tj ET
+BT /F1 10 Tf 50 406 Td (Criticite: normal) Tj ET
+BT /F1 10 Tf 50 392 Td (Environnement utilisation: Indoor office and laboratory testing environment.) Tj ET
+BT /F1 10 Tf 50 378 Td (Exigences fonctionnelles: Must allow assembly testing, PCB installation, battery placement, and) Tj ET
+BT /F1 10 Tf 50 364 Td (connector accessibility.) Tj ET
+BT /F1 10 Tf 50 350 Td (Exigences visuelles: Smooth appearance suitable for customer demonstration. Minimal visible) Tj ET
+BT /F1 10 Tf 50 336 Td (layer lines.) Tj ET
+BT /F2 12 Tf 50 316 Td (Donnees techniques) Tj ET
+BT /F1 10 Tf 50 298 Td (Dimensions: 180 mm x 120 mm x 45 mm) Tj ET
+BT /F1 10 Tf 50 284 Td (Echelle: 1:1) Tj ET
+BT /F1 10 Tf 50 270 Td (Tolerance: ?0.15 mm) Tj ET
+BT /F1 10 Tf 50 256 Td (Finition surface: Sanded and painted) Tj ET
+BT /F1 10 Tf 50 242 Td (Resistance demandee: Light-duty prototype) Tj ET
+BT /F1 10 Tf 50 228 Td (Couleur souhaitee: White) Tj ET
+BT /F1 10 Tf 50 214 Td (Matiere souhaitee: PLA) Tj ET
+BT /F1 10 Tf 50 200 Td (Infill: 15%) Tj ET
+BT /F1 10 Tf 50 186 Td (Hauteur couche: 0.15 mm) Tj ET
+BT /F1 10 Tf 50 172 Td (Orientation: Bottom housing flat on bed) Tj ET
+BT /F2 12 Tf 50 152 Td (Planning) Tj ET
+BT /F1 10 Tf 50 134 Td (Date souhaitee: 19/06/2026 00:00) Tj ET
+BT /F1 10 Tf 50 120 Td (Date approuvee: 18/06/2026 00:00) Tj ET
+BT /F1 10 Tf 50 106 Td (Debut planifie: 15/06/2026 00:00) Tj ET
+BT /F1 10 Tf 50 92 Td (Fin planifiee: 16/06/2026 00:00) Tj ET
+BT /F1 10 Tf 50 78 Td (Imprimante: Printer-02) Tj ET
+BT /F1 10 Tf 50 64 Td (Matiere: PLA Black) Tj ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 7 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 3 0 R >>
+endobj
+5 0 obj
+<< /Length 1798 >>
+stream
+BT /F1 10 Tf 50 760 Td (Technician: Tech Operator) Tj ET
+BT /F1 10 Tf 50 746 Td (Raison priorite: Prototype required for internal design review and customer presentation before) Tj ET
+BT /F1 10 Tf 50 732 Td (final tooling approval.) Tj ET
+BT /F2 12 Tf 50 712 Td (Historique du workflow) Tj ET
+BT /F1 10 Tf 50 694 Td (12/06/2026 10:40 - start -> draft par Demo Requester - Request created) Tj ET
+BT /F1 10 Tf 50 680 Td (12/06/2026 10:40 - draft -> submitted par Demo Requester - Request submitted by requester) Tj ET
+BT /F1 10 Tf 50 666 Td (12/06/2026 10:43 - submitted -> completeness_check par Wael Charaabi) Tj ET
+BT /F1 10 Tf 50 652 Td (12/06/2026 10:43 - completeness_check -> feasibility_review par Wael Charaabi) Tj ET
+BT /F1 10 Tf 50 638 Td (12/06/2026 10:46 - feasibility_review -> approved par Wael Charaabi) Tj ET
+BT /F1 10 Tf 50 624 Td (12/06/2026 10:47 - approved -> prioritized par Wael Charaabi) Tj ET
+BT /F1 10 Tf 50 610 Td (12/06/2026 10:51 - prioritized -> planned par Wael Charaabi) Tj ET
+BT /F1 10 Tf 50 596 Td (12/06/2026 10:52 - planned -> assigned par Wael Charaabi) Tj ET
+BT /F1 10 Tf 50 582 Td (12/06/2026 10:53 - assigned -> in_progress par Tech Operator) Tj ET
+BT /F1 10 Tf 50 568 Td (12/06/2026 10:56 - in_progress -> printed par Tech Operator) Tj ET
+BT /F1 10 Tf 50 554 Td (12/06/2026 10:56 - printed -> post_processing par Tech Operator) Tj ET
+BT /F1 10 Tf 50 540 Td (12/06/2026 10:56 - post_processing -> quality_check par Tech Operator) Tj ET
+BT /F1 10 Tf 50 526 Td (12/06/2026 10:56 - quality_check -> ready_for_pickup par Tech Operator) Tj ET
+BT /F1 10 Tf 50 512 Td (12/06/2026 10:56 - ready_for_pickup -> requester_confirmation par Tech Operator) Tj ET
+BT /F2 12 Tf 50 492 Td (Commentaires principaux) Tj ET
+BT /F1 10 Tf 50 474 Td (Aucun commentaire public.) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 7 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+8 0 obj
+<< /Type /Catalog /Pages 7 0 R >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000154 00000 n 
+0000003213 00000 n 
+0000003349 00000 n 
+0000005199 00000 n 
+0000005335 00000 n 
+0000005398 00000 n 
+trailer
+<< /Size 9 /Root 8 0 R >>
+startxref
+5447
+%%EOF

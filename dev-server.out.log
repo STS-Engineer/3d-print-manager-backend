@@ -1,0 +1,7 @@
+
+> 3d-print-manager-backend@1.0.0 start
+> node src/server.js
+
+🚀 3D Print Manager API running on http://localhost:5000
+📦 Environment: development
+[SLA] Overdue monitoring started (every 30 min)
