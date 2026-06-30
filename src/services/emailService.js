@@ -67,8 +67,61 @@ const textToHtml = (text) => text
   .map((line) => (line.trim() ? escapeHtml(line) : '<br/>'))
   .join('<br/>');
 
+const isActiveRecipient = (recipient) => {
+  if (!recipient || typeof recipient !== 'object') return true;
+
+  const accountStatus = recipient.Status ?? recipient.status;
+  if (accountStatus !== undefined && accountStatus !== null) {
+    return String(accountStatus).trim().toLowerCase() === 'active';
+  }
+
+  const isActive = recipient.is_active ?? recipient.isActive;
+  if (isActive !== undefined && isActive !== null) {
+    return isActive === true || String(isActive).trim().toLowerCase() === 'true';
+  }
+
+  return true;
+};
+
+const getRecipientEmail = (recipient) => {
+  if (!recipient || typeof recipient !== 'object') return recipient;
+  return recipient.email ?? recipient.Email ?? recipient.recipientEmail ?? recipient.recipient_email;
+};
+
+const normalizeRecipients = (to, subject) => {
+  const values = Array.isArray(to) ? to : [to];
+  const recipients = [];
+  const skippedInactive = [];
+
+  for (const recipient of values.filter(Boolean)) {
+    const email = getRecipientEmail(recipient);
+    if (!email) continue;
+
+    if (!isActiveRecipient(recipient)) {
+      skippedInactive.push({
+        userId: recipient.id ?? recipient.user_id ?? recipient.userId ?? null,
+        email,
+      });
+      continue;
+    }
+
+    recipients.push(email);
+  }
+
+  for (const skipped of skippedInactive) {
+    console.log('[Email] Email skipped for inactive user.', {
+      userId: skipped.userId,
+      email: skipped.email,
+      notificationType: subject || null,
+      date: new Date().toISOString(),
+    });
+  }
+
+  return recipients;
+};
+
 const sendMail = async ({ to, subject, text, html }) => {
-  const recipients = Array.isArray(to) ? to.filter(Boolean) : [to].filter(Boolean);
+  const recipients = normalizeRecipients(to, subject);
   if (recipients.length === 0) {
     console.warn('[Email] Email skipped: no recipient provided.', { subject });
     return { skipped: true, reason: 'no_recipients' };

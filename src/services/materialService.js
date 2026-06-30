@@ -64,7 +64,8 @@ const checkLowStockNotifiedColumn = async (client) => {
 
 const getStockAlertRecipients = async (client) => {
   const result = await client.query(`
-    SELECT id, email
+    SELECT id, email, is_active,
+           CASE WHEN is_active = true THEN 'Active' ELSE 'Inactive' END AS status
     FROM users
     WHERE is_active = true
       AND role IN (${roleSqlList([...PRODUCTION_TECHNICIAN_ALIASES, 'administrator'])})
@@ -92,7 +93,7 @@ const notifyLowStock = async (client, material) => {
   }
 
   sendMail({
-    to: recipients.map((u) => u.email),
+    to: recipients,
     subject: title,
     text: message,
     html: `

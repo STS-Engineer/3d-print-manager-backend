@@ -1658,7 +1658,10 @@ exports.updateStatus = async (req, res) => {
           });
         } else {
           const requester = await client.query(
-            'SELECT id, email FROM users WHERE id = $1 AND is_active = true',
+            `SELECT id, email, is_active,
+                    CASE WHEN is_active = true THEN 'Active' ELSE 'Inactive' END AS status
+             FROM users
+             WHERE id = $1`,
             [r.requester_id]
           );
           const requesterUser = requester.rows[0];
@@ -1667,12 +1670,21 @@ exports.updateStatus = async (req, res) => {
 
           if (!requesterUser) {
             emailStatus = 'skipped';
-            emailReason = 'requester_user_not_found_or_inactive';
-            console.warn('[Email] Requester notification skipped: requester user not found or inactive.', {
+            emailReason = 'requester_user_not_found';
+            console.warn('[Email] Requester notification skipped: requester user not found.', {
               requestId: id,
               requestNumber,
               requesterId: r.requester_id,
               status,
+            });
+          } else if (requesterUser.status !== 'Active') {
+            emailStatus = 'skipped';
+            emailReason = 'requester_user_inactive';
+            console.log('[Email] Email skipped for inactive user.', {
+              userId: requesterUser.id,
+              email: requesterEmail || null,
+              notificationType,
+              date: new Date().toISOString(),
             });
           } else if (!isValidEmail(requesterEmail)) {
             emailStatus = 'skipped';
@@ -1687,7 +1699,7 @@ exports.updateStatus = async (req, res) => {
           } else {
             const mailResult = await sendRequesterStatusEmail({
               status,
-              to: requesterEmail,
+              to: requesterUser,
               requestNumber,
               partTitle: updatedRequest.title || r.title,
               completionDate: updatedRequest.completion_date || updatedRequest.ready_at || new Date(),

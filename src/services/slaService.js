@@ -90,7 +90,8 @@ const checkOverdueRequests = async () => {
       }
 
       const coordResult = await client.query(
-        `SELECT id, email
+        `SELECT id, email, is_active,
+                CASE WHEN is_active = true THEN 'Active' ELSE 'Inactive' END AS status
          FROM users
          WHERE role IN (${roleSqlList([...PRODUCTION_TECHNICIAN_ALIASES, 'administrator'])}) AND is_active = true`
       );
@@ -105,7 +106,7 @@ const checkOverdueRequests = async () => {
 
       const email = buildOverdueEmail(req);
       emailJobs.push({
-        to: coordResult.rows.map(user => user.email),
+        to: coordResult.rows,
         subject: email.subject,
         text: email.text,
         html: email.html,
