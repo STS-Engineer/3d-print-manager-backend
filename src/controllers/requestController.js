@@ -621,6 +621,14 @@ exports.getRequest = async (req, res) => {
        WHERE request_id = $1`,
       [id]
     ).catch(() => ({ rows: [{ total_validated_quantity_checked: 0 }] }));
+    const latestQualityCheck = await db.query(
+      `SELECT id, result, successful_quantity, validated_quantity_checked, remaining_quantity, quantity_mismatch, created_at, check_date
+       FROM quality_checks
+       WHERE request_id = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [id]
+    ).catch(() => ({ rows: [] }));
     const productionCycleSummary = productionCycles.rows.reduce((summary, cycle) => ({
       total_printed_quantity: summary.total_printed_quantity + parseInt(cycle.printed_quantity || 0, 10),
       total_rejected_quantity: summary.total_rejected_quantity + parseInt(cycle.rejected_quantity || 0, 10),
@@ -675,6 +683,7 @@ exports.getRequest = async (req, res) => {
       comments: comments.rows.filter(c => c.content !== null),
       statusHistory: history.rows,
       feasibilityReview,
+      latestQualityCheck: latestQualityCheck.rows[0] || null,
       productionCycles: productionCycles.rows,
       productionSummary: {
         total_printed_quantity: aggregatePrintedQuantity,

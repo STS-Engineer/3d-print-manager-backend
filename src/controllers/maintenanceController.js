@@ -1,5 +1,10 @@
 const db = require('../config/database');
 const { createAuditLog } = require('../middleware/auditLog');
+const {
+  COMPLETED_STATUS_LIST,
+  completedCycleHoursSql,
+  completedCycleSql,
+} = require('../services/dashboardMetricsService');
 
 const dueSoonDays = parseInt(process.env.MAINTENANCE_DUE_SOON_DAYS || '14', 10);
 const dueSoonHours = parseFloat(process.env.MAINTENANCE_DUE_SOON_HOURS || '50');
@@ -56,45 +61,24 @@ const runtimeSql = `
     SELECT
       r.id,
       r.printer_id,
-      COUNT(pc.id) FILTER (WHERE pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL) AS timed_cycle_count,
-      COALESCE(
-        SUM(
-          CASE
-            WHEN pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL
-            THEN EXTRACT(EPOCH FROM (pc.end_time - pc.start_time)) / 3600.0
-            ELSE NULL
-          END
-        ),
-        CASE
-          WHEN r.actual_start_time IS NOT NULL AND r.actual_end_time IS NOT NULL
-          THEN EXTRACT(EPOCH FROM (r.actual_end_time - r.actual_start_time)) / 3600.0
-          ELSE NULL
-        END,
-        r.actual_duration,
-        0
-      ) AS print_hours,
-      CASE
-        WHEN COUNT(pc.id) FILTER (WHERE pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL) > 0 THEN 'cycle_history'
-        WHEN r.actual_start_time IS NOT NULL AND r.actual_end_time IS NOT NULL THEN 'actual_start_end'
-        WHEN r.actual_duration IS NOT NULL THEN 'actual_duration'
-        ELSE 'missing_runtime'
-      END AS runtime_source
+      COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS print_hours,
+      COUNT(pc.id) FILTER (WHERE ${completedCycleSql('r', 'pc')}) AS cycle_history_jobs
     FROM print_requests r
-    LEFT JOIN request_production_cycles pc ON pc.request_id = r.id
+    JOIN request_production_cycles pc ON pc.request_id = r.id
     WHERE COALESCE(r.source, 'application') <> 'monday'
-      AND r.status IN ('completed','requester_confirmation','waiting_customer_confirmation','archived')
+      AND r.status IN (${COMPLETED_STATUS_LIST})
       AND r.printer_id IS NOT NULL
-    GROUP BY r.id
+    GROUP BY r.id, r.printer_id
   ),
   runtime AS (
     SELECT
       printer_id,
       SUM(print_hours) AS print_hours,
       COUNT(*) AS completed_job_count,
-      COUNT(*) FILTER (WHERE runtime_source = 'cycle_history') AS cycle_history_jobs,
-      COUNT(*) FILTER (WHERE runtime_source = 'actual_start_end') AS actual_start_end_jobs,
-      COUNT(*) FILTER (WHERE runtime_source = 'actual_duration') AS actual_duration_jobs,
-      COUNT(*) FILTER (WHERE runtime_source = 'missing_runtime') AS missing_runtime_jobs
+      COALESCE(SUM(cycle_history_jobs), 0) AS cycle_history_jobs,
+      0 AS actual_start_end_jobs,
+      0 AS actual_duration_jobs,
+      0 AS missing_runtime_jobs
     FROM request_hours
     GROUP BY printer_id
   ),
@@ -127,7 +111,7 @@ exports.getMaintenanceOverview = async (req, res) => {
         s.name AS site_name,
         COALESCE(runtime.print_hours, 0) AS print_hours,
         COALESCE(runtime.print_hours, 0) AS machine_hours,
-        COALESCE(p.total_operating_hours, 0) + COALESCE(runtime.print_hours, 0) AS total_runtime_hours,
+        COALESCE(runtime.print_hours, 0) AS total_runtime_hours,
         COALESCE(runtime_since.hours_since_maintenance, 0) AS hours_since_maintenance,
         COALESCE(runtime.completed_job_count, 0) AS completed_job_count,
         COALESCE(runtime.cycle_history_jobs, 0) AS cycle_history_jobs,
@@ -291,7 +275,7 @@ exports.getMaintenanceSummary = async (req, res) => {
         p.*,
         COALESCE(runtime.print_hours, 0) AS print_hours,
         COALESCE(runtime.print_hours, 0) AS machine_hours,
-        COALESCE(p.total_operating_hours, 0) + COALESCE(runtime.print_hours, 0) AS total_runtime_hours,
+        COALESCE(runtime.print_hours, 0) AS total_runtime_hours,
         COALESCE(runtime_since.hours_since_maintenance, 0) AS hours_since_maintenance,
         COALESCE(runtime.completed_job_count, 0) AS completed_job_count,
         COALESCE(runtime.cycle_history_jobs, 0) AS cycle_history_jobs,
