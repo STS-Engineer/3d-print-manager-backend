@@ -6,6 +6,15 @@ const {
   recordNotificationHistory,
 } = require('../services/notificationHistoryService');
 const { ensureSatisfactionTable } = require('../services/satisfactionService');
+const { reworkRequestSql } = require('../services/reworkMetricsService');
+const {
+  completedCycleHoursSql,
+  completedReworkCycleHoursSql,
+  invalidPlannedDurationSql,
+  logInvalidPlannedDurations,
+  reworkCycleSql,
+  utilizationSql,
+} = require('../services/dashboardMetricsService');
 
 /**
  * KPI RULES — applies to ALL queries:
@@ -405,7 +414,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       // Rework rate - historically completed requests, including archived
       db.query(`
         SELECT
-          COUNT(*) FILTER (WHERE rework_required = true) AS rework_count,
+          COUNT(*) FILTER (WHERE ${reworkRequestSql('print_requests')}) AS rework_count,
           COUNT(*)                                        AS total
         FROM print_requests
         WHERE ${HISTORICAL_COMPLETED_STATUSES}
@@ -441,21 +450,44 @@ exports.getPerformanceDashboard = async (req, res) => {
 
       // Technician performance
       db.query(`
+        WITH technician_cycle_hours AS (
+          SELECT
+            r.assigned_technician_id,
+            ROUND((AVG(${completedCycleHoursSql('r', 'pc')}) FILTER (WHERE ${completedCycleHoursSql('r', 'pc')} > 0))::NUMERIC, 1) AS avg_duration_h,
+            COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+          FROM print_requests r
+          JOIN request_production_cycles pc ON pc.request_id = r.id
+          WHERE ${historicalCompletedStatusesFor('r')}
+            ${aliasFilter.sql}
+            ${hasExplicitDateFilter ? '' : `AND COALESCE(pc.end_time, r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+          GROUP BY r.assigned_technician_id
+        ),
+        technician_counts AS (
+          SELECT
+            r.assigned_technician_id,
+            COUNT(r.id) FILTER (WHERE ${historicalCompletedStatusesFor('r')}) AS completed,
+            COUNT(r.id) FILTER (WHERE ${historicalCompletedStatusesFor('r')} AND ${reworkRequestSql('r')}) AS rework,
+            COUNT(r.id) FILTER (
+              WHERE ${historicalCompletedStatusesFor('r')}
+                AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time) <= COALESCE(r.approved_due_date, r.requested_due_date)
+            ) AS on_time
+          FROM print_requests r
+          WHERE COALESCE(r.source, 'application') <> 'monday'
+            ${aliasFilter.sql}
+            ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+          GROUP BY r.assigned_technician_id
+        )
         SELECT
           u.first_name || ' ' || u.last_name          AS technician,
-          COUNT(r.id) FILTER (WHERE ${historicalCompletedStatusesFor('r')}) AS completed,
-          COUNT(r.id) FILTER (WHERE ${historicalCompletedStatusesFor('r')} AND r.rework_required = true) AS rework,
-          ROUND((AVG(r.actual_duration) FILTER (WHERE ${historicalCompletedStatusesFor('r')}))::NUMERIC, 1) AS avg_duration_h,
-          COUNT(r.id) FILTER (
-            WHERE ${historicalCompletedStatusesFor('r')}
-              AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time) <= COALESCE(r.approved_due_date, r.requested_due_date)
-          )                                                                                AS on_time
+          COALESCE(tc.completed, 0) AS completed,
+          COALESCE(tc.rework, 0) AS rework,
+          COALESCE(tch.avg_duration_h, 0) AS avg_duration_h,
+          COALESCE(tc.on_time, 0) AS on_time,
+          COALESCE(tch.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
         FROM users u
-        LEFT JOIN print_requests r ON r.assigned_technician_id = u.id
-          ${aliasFilter.sql}
-          ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+        LEFT JOIN technician_counts tc ON tc.assigned_technician_id = u.id
+        LEFT JOIN technician_cycle_hours tch ON tch.assigned_technician_id = u.id
         WHERE u.role IN (${roleSqlList(PRODUCTION_TECHNICIAN_ALIASES)}) AND u.is_active = true
-        GROUP BY u.id, u.first_name, u.last_name
         ORDER BY completed DESC
       `, aliasFilter.params),
 
@@ -465,16 +497,11 @@ exports.getPerformanceDashboard = async (req, res) => {
           COUNT(DISTINCT r.id) AS rework_requests,
           COALESCE(SUM(pc.actual_cost), 0) AS rework_cost,
           COALESCE(SUM(pc.material_used), 0) AS rework_material_used,
-          COALESCE(SUM(
-            CASE
-              WHEN pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL
-              THEN EXTRACT(EPOCH FROM (pc.end_time - pc.start_time)) / 3600
-              ELSE 0
-            END
-          ), 0) AS rework_print_time
+          COALESCE(SUM(${completedReworkCycleHoursSql('r', 'pc')}), 0) AS rework_print_time,
+          COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
         FROM request_production_cycles pc
         JOIN print_requests r ON r.id = pc.request_id
-        WHERE pc.cycle_number > 1
+        WHERE ${reworkCycleSql('pc')}
           AND ${NON_IMPORTED.replace(/source/g, 'r.source')}
           AND ${completedStatusesFor('r')}
           ${aliasFilter.sql}
@@ -507,39 +534,91 @@ exports.getPerformanceDashboard = async (req, res) => {
 
       // Printer performance
       db.query(`
+        WITH cycle_hours AS (
+          SELECT
+            r.printer_id,
+            ROUND(COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0)::NUMERIC, 1) AS print_hours,
+            COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+          FROM print_requests r
+          JOIN request_production_cycles pc ON pc.request_id = r.id
+          WHERE ${historicalCompletedStatusesFor('r')}
+            ${aliasFilter.sql}
+            ${hasExplicitDateFilter ? '' : `AND COALESCE(pc.end_time, r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+          GROUP BY r.printer_id
+        ),
+        request_totals AS (
+          SELECT
+            r.printer_id,
+            COUNT(r.id) AS requests_completed,
+            COALESCE(SUM(COALESCE(r.rejected_quantity, r.scrap_count, 0)), 0) AS failed_prints,
+            COALESCE(SUM(GREATEST(COALESCE(r.printed_quantity, 0) + COALESCE(r.rejected_quantity, r.scrap_count, 0), 1)), 0) AS total_prints,
+            COUNT(r.id) FILTER (WHERE ${reworkRequestSql('r')}) AS rework_requests
+          FROM print_requests r
+          WHERE ${historicalCompletedStatusesFor('r')}
+            ${aliasFilter.sql}
+            ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+          GROUP BY r.printer_id
+        ),
+        printer_keys AS (
+          SELECT printer_id FROM request_totals
+          UNION
+          SELECT printer_id FROM cycle_hours
+        )
         SELECT
           COALESCE(p.name, 'Unassigned') AS printer,
-          COUNT(r.id) AS requests_completed,
-          ROUND(COALESCE(SUM(r.actual_duration), 0)::NUMERIC, 1) AS print_hours,
-          COALESCE(SUM(COALESCE(r.rejected_quantity, r.scrap_count, 0)), 0) AS failed_prints,
-          COALESCE(SUM(GREATEST(COALESCE(r.printed_quantity, 0) + COALESCE(r.rejected_quantity, r.scrap_count, 0), 1)), 0) AS total_prints,
-          COUNT(r.id) FILTER (WHERE r.rework_required = true) AS rework_requests
-        FROM print_requests r
-        LEFT JOIN printers p ON r.printer_id = p.id
-        WHERE ${historicalCompletedStatusesFor('r')}
-          ${aliasFilter.sql}
-          ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
-        GROUP BY COALESCE(p.name, 'Unassigned')
+          COALESCE(rt.requests_completed, 0) AS requests_completed,
+          COALESCE(ch.print_hours, 0) AS print_hours,
+          COALESCE(rt.failed_prints, 0) AS failed_prints,
+          COALESCE(rt.total_prints, 0) AS total_prints,
+          COALESCE(rt.rework_requests, 0) AS rework_requests,
+          COALESCE(ch.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
+        FROM printer_keys pk
+        LEFT JOIN request_totals rt ON rt.printer_id IS NOT DISTINCT FROM pk.printer_id
+        LEFT JOIN cycle_hours ch ON ch.printer_id IS NOT DISTINCT FROM pk.printer_id
+        LEFT JOIN printers p ON p.id = pk.printer_id
         ORDER BY requests_completed DESC, print_hours DESC
       `, aliasFilter.params),
 
       // Technician production performance
       db.query(`
+        WITH cycle_hours AS (
+          SELECT
+            r.assigned_technician_id,
+            ROUND(COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0)::NUMERIC, 1) AS actual_print_hours,
+            COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+          FROM print_requests r
+          JOIN request_production_cycles pc ON pc.request_id = r.id
+          WHERE ${historicalCompletedStatusesFor('r')}
+            ${aliasFilter.sql}
+            ${hasExplicitDateFilter ? '' : `AND COALESCE(pc.end_time, r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+          GROUP BY r.assigned_technician_id
+        ),
+        request_totals AS (
+          SELECT
+            r.assigned_technician_id,
+            COALESCE(SUM(r.material_used_grams), 0) AS material_consumed,
+            COALESCE(SUM(r.actual_cost), 0) AS actual_cost_managed
+          FROM print_requests r
+          WHERE ${historicalCompletedStatusesFor('r')}
+            ${aliasFilter.sql}
+            ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+          GROUP BY r.assigned_technician_id
+        )
         SELECT
           u.first_name || ' ' || u.last_name AS technician,
-          ROUND(COALESCE(SUM(r.actual_duration), 0)::NUMERIC, 1) AS actual_print_hours,
-          COALESCE(SUM(r.material_used_grams), 0) AS material_consumed,
-          COALESCE(SUM(r.actual_cost), 0) AS actual_cost_managed
+          COALESCE(ch.actual_print_hours, 0) AS actual_print_hours,
+          COALESCE(rt.material_consumed, 0) AS material_consumed,
+          COALESCE(rt.actual_cost_managed, 0) AS actual_cost_managed,
+          COALESCE(ch.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
         FROM users u
-        LEFT JOIN print_requests r ON r.assigned_technician_id = u.id
-          AND ${historicalCompletedStatusesFor('r')}
-          ${aliasFilter.sql}
-          ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
+        LEFT JOIN cycle_hours ch ON ch.assigned_technician_id = u.id
+        LEFT JOIN request_totals rt ON rt.assigned_technician_id = u.id
         WHERE u.role IN (${roleSqlList(PRODUCTION_TECHNICIAN_ALIASES)}) AND u.is_active = true
-        GROUP BY u.id, u.first_name, u.last_name
-        HAVING COALESCE(SUM(r.actual_duration), 0) > 0
-            OR COALESCE(SUM(r.material_used_grams), 0) > 0
-            OR COALESCE(SUM(r.actual_cost), 0) > 0
+          AND (
+            COALESCE(ch.actual_print_hours, 0) > 0
+            OR COALESCE(rt.material_consumed, 0) > 0
+            OR COALESCE(rt.actual_cost_managed, 0) > 0
+          )
         ORDER BY actual_print_hours DESC, actual_cost_managed DESC
       `, aliasFilter.params),
 
@@ -624,6 +703,11 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, aliasFilter.params),
     ]);
 
+    logInvalidPlannedDurations('Performance - Technician Average Duration', techPerf.rows);
+    logInvalidPlannedDurations('Performance - Rework Analysis', reworkAnalysis.rows);
+    logInvalidPlannedDurations('Performance - Printer Performance', printerPerformance.rows);
+    logInvalidPlannedDurations('Performance - Technician Production Performance', technicianPerformance.rows);
+
     const onTimeData = onTime.rows[0];
     const onTimeRate = onTimeData.total > 0
       ? Math.round((parseInt(onTimeData.on_time) / parseInt(onTimeData.total)) * 100)
@@ -686,6 +770,8 @@ exports.getManagementDashboard = async (req, res) => {
     await ensureSatisfactionTable(db);
     const requestFilter = buildDashboardFilters(req.query);
     const aliasFilter = buildDashboardFilters(req.query, 'r');
+    const printerCapacityHours = Math.max(parseFloat(process.env.RESOURCE_PRINTER_MONTHLY_HOURS || '160') || 0, 0);
+    const technicianCapacityHours = Math.max(parseFloat(process.env.RESOURCE_TECHNICIAN_MONTHLY_HOURS || '160') || 0, 0);
     const [demandTrend, topCategories, serviceLevel,
            bottlenecks, productionReviewPerf, costBySite, costByDepartment,
            costByCategory, capacityOverview, forecast, managementSatisfaction] = await Promise.all([
@@ -836,22 +922,41 @@ exports.getManagementDashboard = async (req, res) => {
                 )
             ) AS active_technicians
           FROM users
+        ),
+        printer_hours AS (
+          SELECT COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS completed_print_hours,
+                 COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+          FROM print_requests r
+          JOIN request_production_cycles pc ON pc.request_id = r.id
+          WHERE ${historicalCompletedStatusesFor('r')}
+            ${aliasFilter.sql}
+        ),
+        technician_hours AS (
+          SELECT COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS completed_print_hours
+          FROM print_requests r
+          JOIN request_production_cycles pc ON pc.request_id = r.id
+          WHERE ${historicalCompletedStatusesFor('r')}
+            AND r.assigned_technician_id IS NOT NULL
+            ${aliasFilter.sql}
         )
         SELECT
           total_printers,
           active_printers,
-          CASE WHEN total_printers > 0 THEN ROUND((active_printers::NUMERIC / total_printers) * 100, 1) ELSE 0 END AS printer_utilization,
+          ${utilizationSql('ph.completed_print_hours', `(total_printers * ${printerCapacityHours})`)} AS printer_utilization,
           total_technicians,
           active_technicians,
-          CASE WHEN total_technicians > 0 THEN ROUND((active_technicians::NUMERIC / total_technicians) * 100, 1) ELSE 0 END AS technician_utilization,
+          ${utilizationSql('th.completed_print_hours', `(total_technicians * ${technicianCapacityHours})`)} AS technician_utilization,
+          COALESCE(ph.completed_print_hours, 0) AS completed_printer_print_hours,
+          COALESCE(th.completed_print_hours, 0) AS completed_technician_print_hours,
+          COALESCE(ph.invalid_planned_duration_count, 0) AS invalid_planned_duration_count,
           GREATEST(
             0,
             ROUND(100 - GREATEST(
-              CASE WHEN total_printers > 0 THEN (active_printers::NUMERIC / total_printers) * 100 ELSE 0 END,
-              CASE WHEN total_technicians > 0 THEN (active_technicians::NUMERIC / total_technicians) * 100 ELSE 0 END
+              ${utilizationSql('ph.completed_print_hours', `(total_printers * ${printerCapacityHours})`)},
+              ${utilizationSql('th.completed_print_hours', `(total_technicians * ${technicianCapacityHours})`)}
             ), 1)
           ) AS open_capacity
-        FROM printer_capacity, technician_capacity
+        FROM printer_capacity, technician_capacity, printer_hours ph, technician_hours th
       `, aliasFilter.params),
 
       // Forecast based on monthly averages over the last 6 months
@@ -887,6 +992,8 @@ exports.getManagementDashboard = async (req, res) => {
           ${aliasFilter.sql}
       `, aliasFilter.params),
     ]);
+
+    logInvalidPlannedDurations('Management - Capacity Overview', capacityOverview.rows);
 
     res.json({
       demandTrend:      demandTrend.rows,
@@ -934,11 +1041,13 @@ exports.getResourceDashboard = async (req, res) => {
       db.query(`
         WITH cycle_hours AS (
           SELECT r.printer_id,
-                 COALESCE(SUM(CASE WHEN pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL THEN EXTRACT(EPOCH FROM (pc.end_time - pc.start_time)) / 3600.0 ELSE 0 END), 0) AS print_hours
+                 COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS print_hours,
+                 COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
           FROM print_requests r
-          LEFT JOIN request_production_cycles pc ON pc.request_id = r.id
+          JOIN request_production_cycles pc ON pc.request_id = r.id
           WHERE COALESCE(r.source, 'application') <> 'monday'
-            AND COALESCE(pc.end_time, r.actual_end_time, r.created_at) > NOW() - INTERVAL '30 days'
+            AND ${historicalCompletedStatusesFor('r')}
+            AND pc.end_time > NOW() - INTERVAL '30 days'
             ${resourceFilter.sql}
           GROUP BY r.printer_id
         ),
@@ -953,7 +1062,8 @@ exports.getResourceDashboard = async (req, res) => {
         SELECT p.id, p.name AS printer,
                COALESCE(ch.print_hours, 0) AS print_hours,
                COALESCE(aj.active_jobs, 0) AS active_jobs,
-               CASE WHEN $2::NUMERIC > 0 THEN ROUND((COALESCE(ch.print_hours, 0)::NUMERIC / $2::NUMERIC) * 100, 1) ELSE 0 END AS utilization
+               ${utilizationSql('COALESCE(ch.print_hours, 0)', '$2::NUMERIC')} AS utilization,
+               COALESCE(ch.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
         FROM printers p
         LEFT JOIN cycle_hours ch ON ch.printer_id = p.id
         LEFT JOIN active_jobs aj ON aj.printer_id = p.id
@@ -965,11 +1075,13 @@ exports.getResourceDashboard = async (req, res) => {
       db.query(`
         WITH cycle_hours AS (
           SELECT r.assigned_technician_id,
-                 COALESCE(SUM(CASE WHEN pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL THEN EXTRACT(EPOCH FROM (pc.end_time - pc.start_time)) / 3600.0 ELSE 0 END), 0) AS print_hours
+                 COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS print_hours,
+                 COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
           FROM print_requests r
-          LEFT JOIN request_production_cycles pc ON pc.request_id = r.id
+          JOIN request_production_cycles pc ON pc.request_id = r.id
           WHERE COALESCE(r.source, 'application') <> 'monday'
-            AND COALESCE(pc.end_time, r.actual_end_time, r.created_at) > NOW() - INTERVAL '30 days'
+            AND ${historicalCompletedStatusesFor('r')}
+            AND pc.end_time > NOW() - INTERVAL '30 days'
             ${resourceFilter.sql}
           GROUP BY r.assigned_technician_id
         ),
@@ -985,7 +1097,8 @@ exports.getResourceDashboard = async (req, res) => {
                u.first_name || ' ' || u.last_name AS technician,
                COALESCE(a.assigned_requests, 0) AS assigned_requests,
                COALESCE(ch.print_hours, 0) AS print_hours,
-               CASE WHEN $2::NUMERIC > 0 THEN ROUND((COALESCE(ch.print_hours, 0)::NUMERIC / $2::NUMERIC) * 100, 1) ELSE 0 END AS utilization
+               ${utilizationSql('COALESCE(ch.print_hours, 0)', '$2::NUMERIC')} AS utilization,
+               COALESCE(ch.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
         FROM users u
         LEFT JOIN cycle_hours ch ON ch.assigned_technician_id = u.id
         LEFT JOIN assigned a ON a.assigned_technician_id = u.id
@@ -1082,6 +1195,8 @@ exports.getResourceDashboard = async (req, res) => {
 
     const printerRows = printerUtilization.rows;
     const technicianRows = technicianUtilization.rows;
+    logInvalidPlannedDurations('Resource - Printer Utilization', printerRows);
+    logInvalidPlannedDurations('Resource - Technician Utilization', technicianRows);
     const forecastRow = forecast.rows[0] || {};
     const lowStockCount = stockRisk.rows.filter(row => row.risk_level === 'red').length;
     const usedPrinterHours = printerRows.reduce((sum, row) => sum + parseFloat(row.print_hours || 0), 0);

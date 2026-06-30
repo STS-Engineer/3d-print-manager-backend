@@ -4,6 +4,7 @@ const { PRODUCTION_TECHNICIAN_ALIASES, roleSqlList } = require('../utils/roles')
 const { getAllCostData } = require('../services/costDashboardService');
 const { ensureSatisfactionTable } = require('../services/satisfactionService');
 const { createAuditLog } = require('../middleware/auditLog');
+const { reworkRequestSql, reworkRateSql } = require('../services/reworkMetricsService');
 
 // ── ExcelJS helper ────────────────────────────────────────────────────────────
 let ExcelJS;
@@ -298,7 +299,7 @@ const getRequestRows = async (whereClause = '', params = []) => {
       r.actual_duration      AS "Duration (h)",
       r.quality_result       AS "QC Result",
       r.scrap_count          AS "Scraps",
-      r.rework_required      AS "Rework",
+      ${reworkRequestSql('r')} AS "Rework",
       r.completion_date      AS "Completed At",
       ss.overall_rating      AS "Satisfaction",
       ss.quality_rating      AS "Quality Rating",
@@ -357,7 +358,8 @@ const getKPISummary = async (from, to) => {
       COUNT(*)                                                              AS total,
       COUNT(*) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL}) AS completed,
       COUNT(*) FILTER (WHERE r.status NOT IN (${TERMINAL_STATUS_LIST})) AS open,
-      COUNT(*) FILTER (WHERE r.rework_required = true)                       AS rework,
+      COUNT(*) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL} AND ${reworkRequestSql('r')}) AS rework,
+      ${reworkRateSql('r', HISTORICAL_COMPLETED_SQL)} AS rework_rate,
       COUNT(*) FILTER (WHERE r.scrap_count > 0)                              AS failed,
       COUNT(*) FILTER (WHERE r.approved_due_date < COALESCE(r.completion_date, r.ready_at, r.actual_end_time) AND ${HISTORICAL_COMPLETED_SQL}) AS late,
       ROUND(AVG(EXTRACT(EPOCH FROM (COALESCE(r.completion_date, r.ready_at, r.actual_end_time) - r.submitted_at))/3600) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL})::NUMERIC, 1) AS avg_lead_h,
@@ -382,6 +384,7 @@ const getKPISummary = async (from, to) => {
     { label: 'Average Lead Time (hours)',       value: d.avg_lead_h ?? '—' },
     { label: 'On-Time Delivery Rate (%)',       value: d.on_time_pct ?? '—' },
     { label: 'Rework Count',                   value: d.rework },
+    { label: 'Rework Rate (%)',                value: d.rework_rate ?? '—' },
     { label: 'Failed / Scrapped Prints',       value: d.failed },
     { label: 'Late Deliveries',                value: d.late },
     { label: 'Total Material Consumed (g)',    value: d.material_used_g ?? '—' },
@@ -468,7 +471,7 @@ exports.exportTechnicianWorkload = async (req, res) => {
         COUNT(r.id) FILTER (WHERE r.status NOT IN ('completed','archived',
           'cancelled','rejected','draft','submitted','completeness_check',
           'feasibility_review','more_info_required','approved','prioritized','planned')) AS "Currently Active",
-        COUNT(r.id) FILTER (WHERE r.rework_required=true)                          AS "Had Rework",
+        COUNT(r.id) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL} AND ${reworkRequestSql('r')}) AS "Had Rework",
         COUNT(r.id) FILTER (WHERE r.scrap_count>0)                                 AS "Had Failures",
         COUNT(r.id) FILTER (
           WHERE ${HISTORICAL_COMPLETED_SQL}
@@ -502,7 +505,7 @@ exports.exportTechnicianWorkload = async (req, res) => {
         r.material_used_grams          AS "Material Used (g)",
         r.quality_result               AS "QC Result",
         r.scrap_count                  AS "Scraps",
-        r.rework_required              AS "Rework",
+        ${reworkRequestSql('r')}       AS "Rework",
         r.approved_due_date            AS "Due Date",
         r.completion_date              AS "Completed At"
       FROM print_requests r
@@ -609,7 +612,8 @@ exports.exportKPIs = async (req, res) => {
         DATE_TRUNC('week', r.created_at)::DATE AS "Week",
         COUNT(*) AS "Submitted",
         COUNT(*) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL}) AS "Completed",
-        COUNT(*) FILTER (WHERE r.rework_required=true) AS "Rework",
+        COUNT(*) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL} AND ${reworkRequestSql('r')}) AS "Rework",
+        ${reworkRateSql('r', HISTORICAL_COMPLETED_SQL)} AS "Rework Rate (%)",
         COUNT(*) FILTER (WHERE r.scrap_count>0) AS "Failed",
         ROUND(AVG(EXTRACT(EPOCH FROM (COALESCE(r.completion_date, r.ready_at, r.actual_end_time)-r.submitted_at))/3600) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL})::NUMERIC, 1) AS "Avg Lead (h)",
         ROUND(SUM(r.material_used_grams) FILTER (WHERE ${HISTORICAL_COMPLETED_SQL})::NUMERIC, 0) AS "Material (g)",
@@ -625,7 +629,7 @@ exports.exportKPIs = async (req, res) => {
     `, params);
 
     const summary = await getKPISummary(dateFrom, dateTo);
-    const cols = ['Week','Submitted','Completed','Rework','Failed','Avg Lead (h)','Material (g)','Avg Satisfaction','Recommendation Rate (%)','Survey Participation (%)'];
+    const cols = ['Week','Submitted','Completed','Rework','Rework Rate (%)','Failed','Avg Lead (h)','Material (g)','Avg Satisfaction','Recommendation Rate (%)','Survey Participation (%)'];
     const filename = `3dprint-kpis-${dateFrom}-to-${dateTo}.xlsx`;
     if (req.query.format === 'csv' || !ExcelJS) return sendCSV(res, weekly.rows, filename);
     const wb = await buildWorkbook({

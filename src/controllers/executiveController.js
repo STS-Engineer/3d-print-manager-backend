@@ -5,6 +5,13 @@ const {
   getCostSummary,
   getCostComponentBreakdown,
 } = require('../services/costDashboardService');
+const { reworkRateSql, reworkRequestSql } = require('../services/reworkMetricsService');
+const {
+  completedCycleHoursSql,
+  invalidPlannedDurationSql,
+  logInvalidPlannedDurations,
+  utilizationSql,
+} = require('../services/dashboardMetricsService');
 
 let ExcelJS;
 try { ExcelJS = require('exceljs'); } catch (_) { ExcelJS = null; }
@@ -115,6 +122,8 @@ const auditExecutive = async (req, action, details) => createAuditLog({
 
 const getExecutiveData = async (query = {}) => {
   const filters = buildFilters(query);
+  const printerCapacityHours = Math.max(parseFloat(process.env.RESOURCE_PRINTER_MONTHLY_HOURS || '160') || 0, 0);
+  const technicianCapacityHours = Math.max(parseFloat(process.env.RESOURCE_TECHNICIAN_MONTHLY_HOURS || '160') || 0, 0);
   const costFilters = {
     site_id: query.site_id,
     material_id: query.material_id,
@@ -163,6 +172,18 @@ const getExecutiveData = async (query = {}) => {
     `, filters.params),
 
     db.query(`
+      WITH filtered AS (
+        SELECT r.*
+        FROM print_requests r
+        ${filters.where}
+      ),
+      cycle_metrics AS (
+        SELECT
+          ROUND((AVG(${completedCycleHoursSql('fr', 'pc')}) FILTER (WHERE ${completedCycleHoursSql('fr', 'pc')} > 0))::NUMERIC, 1) AS average_production_time,
+          COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('fr')}) AS invalid_planned_duration_count
+        FROM filtered fr
+        JOIN request_production_cycles pc ON pc.request_id = fr.id
+      )
       SELECT
         ROUND(100.0 * COUNT(*) FILTER (
           WHERE status IN (${COMPLETED})
@@ -170,16 +191,13 @@ const getExecutiveData = async (query = {}) => {
         ) / NULLIF(COUNT(*) FILTER (WHERE status IN (${COMPLETED})), 0), 1) AS on_time_delivery_rate,
         ROUND((AVG(EXTRACT(EPOCH FROM (COALESCE(completion_date, ready_at, actual_end_time) - submitted_at)) / 3600)
           FILTER (WHERE status IN (${COMPLETED}) AND submitted_at IS NOT NULL))::NUMERIC, 1) AS average_lead_time,
-        ROUND(AVG(COALESCE(actual_duration,
-          CASE WHEN actual_start_time IS NOT NULL AND actual_end_time IS NOT NULL
-            THEN EXTRACT(EPOCH FROM (actual_end_time - actual_start_time)) / 3600 END
-        ))::NUMERIC, 1) AS average_production_time,
+        COALESCE((SELECT average_production_time FROM cycle_metrics), 0) AS average_production_time,
+        COALESCE((SELECT invalid_planned_duration_count FROM cycle_metrics), 0) AS invalid_planned_duration_count,
         ROUND((AVG(EXTRACT(EPOCH FROM (approved_at - submitted_at)) / 3600)
           FILTER (WHERE approved_at IS NOT NULL AND submitted_at IS NOT NULL))::NUMERIC, 1) AS average_approval_time,
         ROUND((AVG(EXTRACT(EPOCH FROM (reception_confirmed_at - ready_at)) / 3600)
           FILTER (WHERE reception_confirmed_at IS NOT NULL AND ready_at IS NOT NULL))::NUMERIC, 1) AS average_customer_confirmation_time
-      FROM print_requests r
-      ${filters.where}
+      FROM filtered
     `, filters.params),
 
     db.query(`
@@ -201,6 +219,20 @@ const getExecutiveData = async (query = {}) => {
         ${filters.where}
           AND status IN ('planned','assigned','in_progress','printed','quality_check','rework_required')
       ),
+      printer_hours AS (
+        SELECT COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS completed_print_hours,
+               COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+        FROM print_requests r
+        JOIN request_production_cycles pc ON pc.request_id = r.id
+        ${filters.where}
+      ),
+      technician_hours AS (
+        SELECT COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS completed_print_hours
+        FROM print_requests r
+        JOIN request_production_cycles pc ON pc.request_id = r.id
+        ${filters.where}
+          AND r.assigned_technician_id IS NOT NULL
+      ),
       reserved AS (
         SELECT COALESCE(SUM(material_reserved_qty), 0) AS reserved_capacity
         FROM print_requests r
@@ -218,15 +250,18 @@ const getExecutiveData = async (query = {}) => {
         ) m
       )
       SELECT
-        CASE WHEN p.total_printers > 0 THEN ROUND((ap.active_printers::NUMERIC / p.total_printers) * 100, 1) ELSE 0 END AS printer_utilization,
-        CASE WHEN t.total_technicians > 0 THEN ROUND((at.active_technicians::NUMERIC / t.total_technicians) * 100, 1) ELSE 0 END AS technician_utilization,
+        ${utilizationSql('ph.completed_print_hours', `(p.total_printers * ${printerCapacityHours})`)} AS printer_utilization,
+        ${utilizationSql('th.completed_print_hours', `(t.total_technicians * ${technicianCapacityHours})`)} AS technician_utilization,
         GREATEST(0, 100 - GREATEST(
-          CASE WHEN p.total_printers > 0 THEN (ap.active_printers::NUMERIC / p.total_printers) * 100 ELSE 0 END,
-          CASE WHEN t.total_technicians > 0 THEN (at.active_technicians::NUMERIC / t.total_technicians) * 100 ELSE 0 END
+          ${utilizationSql('ph.completed_print_hours', `(p.total_printers * ${printerCapacityHours})`)},
+          ${utilizationSql('th.completed_print_hours', `(t.total_technicians * ${technicianCapacityHours})`)}
         )) AS available_capacity,
+        COALESCE(ph.completed_print_hours, 0) AS completed_printer_print_hours,
+        COALESCE(th.completed_print_hours, 0) AS completed_technician_print_hours,
+        COALESCE(ph.invalid_planned_duration_count, 0) AS invalid_planned_duration_count,
         reserved.reserved_capacity,
         forecast.forecast_capacity
-      FROM printers p, technicians t, active_printers ap, active_technicians at, reserved, forecast
+      FROM printers p, technicians t, active_printers ap, active_technicians at, printer_hours ph, technician_hours th, reserved, forecast
     `, filters.params),
 
     db.query(`
@@ -265,9 +300,9 @@ const getExecutiveData = async (query = {}) => {
 
     db.query(`
       SELECT
-        ROUND(100.0 * COUNT(*) FILTER (WHERE quality_result = 'pass') / NULLIF(COUNT(*) FILTER (WHERE quality_result IS NOT NULL), 0), 1) AS pass_rate,
+        ROUND(100.0 * COUNT(*) FILTER (WHERE status IN (${COMPLETED}) AND quality_result = 'pass' AND NOT ${reworkRequestSql('r')}) / NULLIF(COUNT(*) FILTER (WHERE status IN (${COMPLETED})), 0), 1) AS pass_rate,
         ROUND(100.0 * COUNT(*) FILTER (WHERE quality_result = 'pass') / NULLIF(COUNT(*) FILTER (WHERE status IN ('quality_check','requester_confirmation','completed','archived') OR quality_result IS NOT NULL), 0), 1) AS quality_check_success_rate,
-        ROUND(100.0 * COUNT(*) FILTER (WHERE rework_required = true) / NULLIF(COUNT(*), 0), 1) AS rework_rate,
+        ${reworkRateSql('r', `r.status IN (${COMPLETED})`)} AS rework_rate,
         ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'rejected') / NULLIF(COUNT(*), 0), 1) AS rejected_rate,
         ROUND(100.0 * COUNT(*) FILTER (WHERE requester_confirmation = true OR reception_confirmed_at IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE status IN (${COMPLETED})), 0), 1) AS customer_confirmation_rate
       FROM print_requests r
@@ -280,6 +315,9 @@ const getExecutiveData = async (query = {}) => {
     getCostSummary(costFilters),
     getCostComponentBreakdown(costFilters),
   ]);
+
+  logInvalidPlannedDurations('Executive - Average Production Time', delivery.rows);
+  logInvalidPlannedDurations('Executive - Capacity Overview', capacity.rows);
 
   const financial = {
     actualProductionCost: costSummary.actualCostTotal,
@@ -321,6 +359,8 @@ const getPeriodBucket = (period) => {
 };
 
 const getTrends = async (query = {}) => {
+  const printerCapacityHours = Math.max(parseFloat(process.env.RESOURCE_PRINTER_MONTHLY_HOURS || '160') || 0, 0);
+  const technicianCapacityHours = Math.max(parseFloat(process.env.RESOURCE_TECHNICIAN_MONTHLY_HOURS || '160') || 0, 0);
   const periods = ['30d', '90d', '12m'];
   const output = {};
   for (const period of periods) {
@@ -365,18 +405,45 @@ const getTrends = async (query = {}) => {
         ORDER BY bucket
       `, filters.params),
       db.query(`
-        SELECT DATE_TRUNC('${p.trunc}', r.created_at)::DATE AS bucket,
-               COUNT(DISTINCT r.printer_id) AS printer_utilization,
-               COUNT(DISTINCT r.assigned_technician_id) AS technician_utilization,
-               COUNT(*) AS forecast_demand,
-               GREATEST(0, 100 - COUNT(*)::NUMERIC) AS forecast_capacity
-        FROM print_requests r
-        ${filters.where}
-          AND r.created_at >= NOW() - INTERVAL '${p.interval}'
-        GROUP BY DATE_TRUNC('${p.trunc}', r.created_at)
+        WITH bucketed AS (
+          SELECT
+            DATE_TRUNC('${p.trunc}', r.created_at)::DATE AS bucket,
+            COUNT(DISTINCT r.printer_id) FILTER (WHERE r.status NOT IN (${TERMINAL})) AS active_printers,
+            COUNT(DISTINCT r.assigned_technician_id) FILTER (WHERE r.status NOT IN (${TERMINAL})) AS active_technicians,
+            COUNT(*) AS forecast_demand
+          FROM print_requests r
+          ${filters.where}
+            AND r.created_at >= NOW() - INTERVAL '${p.interval}'
+          GROUP BY DATE_TRUNC('${p.trunc}', r.created_at)
+        ),
+        hours AS (
+          SELECT
+            DATE_TRUNC('${p.trunc}', r.created_at)::DATE AS bucket,
+            COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS completed_print_hours,
+            COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+          FROM print_requests r
+          JOIN request_production_cycles pc ON pc.request_id = r.id
+          ${filters.where}
+            AND r.created_at >= NOW() - INTERVAL '${p.interval}'
+          GROUP BY DATE_TRUNC('${p.trunc}', r.created_at)
+        )
+        SELECT
+               b.bucket,
+               ${utilizationSql('h.completed_print_hours', `${printerCapacityHours}`)} AS printer_utilization,
+               ${utilizationSql('h.completed_print_hours', `${technicianCapacityHours}`)} AS technician_utilization,
+               b.forecast_demand,
+               GREATEST(0, 100 - GREATEST(
+                 ${utilizationSql('h.completed_print_hours', `${printerCapacityHours}`)},
+                 ${utilizationSql('h.completed_print_hours', `${technicianCapacityHours}`)}
+               )) AS forecast_capacity,
+               COALESCE(h.completed_print_hours, 0) AS completed_print_hours,
+               COALESCE(h.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
+        FROM bucketed b
+        LEFT JOIN hours h USING (bucket)
         ORDER BY bucket
       `, filters.params),
     ]);
+    logInvalidPlannedDurations(`Executive - Capacity Trend ${period}`, capacity.rows);
     output[period] = {
       requestVolumeTrend: requests.rows,
       costTrend: costs.rows,
@@ -390,37 +457,41 @@ const getTrends = async (query = {}) => {
 const getForecast = async (query = {}) => {
   const filters = buildFilters(query);
   const result = await db.query(`
-    WITH monthly AS (
-      SELECT
-        DATE_TRUNC('month', r.created_at)::DATE AS month,
-        COUNT(*) AS requests,
-        COUNT(*) FILTER (WHERE r.status IN (${COMPLETED})) AS completions,
-        COALESCE(SUM(
-          COALESCE(
-            r.actual_duration,
-            CASE
-              WHEN r.planned_start_date IS NOT NULL
-               AND r.planned_end_date IS NOT NULL
-               AND r.planned_end_date > r.planned_start_date
-              THEN EXTRACT(EPOCH FROM (r.planned_end_date - r.planned_start_date)) / 3600.0
-            END,
-            0
-          )
-        ), 0) AS workload,
-        COALESCE(SUM(COALESCE(r.material_used_grams, r.material_reserved_qty, 0)), 0) AS material_consumption
+    WITH filtered AS (
+      SELECT r.*
       FROM print_requests r
       ${filters.where}
         AND r.created_at >= DATE_TRUNC('month', NOW()) - INTERVAL '12 months'
-      GROUP BY DATE_TRUNC('month', r.created_at)
+    ),
+    monthly AS (
+      SELECT
+        DATE_TRUNC('month', created_at)::DATE AS month,
+        COUNT(*) AS requests,
+        COUNT(*) FILTER (WHERE status IN (${COMPLETED})) AS completions,
+        COALESCE(SUM(COALESCE(material_used_grams, material_reserved_qty, 0)), 0) AS material_consumption
+      FROM filtered
+      GROUP BY DATE_TRUNC('month', created_at)
+    ),
+    monthly_workload AS (
+      SELECT
+        DATE_TRUNC('month', fr.created_at)::DATE AS month,
+        COALESCE(SUM(${completedCycleHoursSql('fr', 'pc')}), 0) AS workload,
+        COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('fr')}) AS invalid_planned_duration_count
+      FROM filtered fr
+      JOIN request_production_cycles pc ON pc.request_id = fr.id
+      GROUP BY DATE_TRUNC('month', fr.created_at)
     )
     SELECT
       COALESCE(AVG(requests), 0) AS avg_monthly_requests,
       COALESCE(AVG(completions), 0) AS avg_monthly_completions,
-      COALESCE(AVG(workload), 0) AS avg_monthly_workload,
-      COALESCE(AVG(material_consumption), 0) AS avg_monthly_material_consumption
+      COALESCE(AVG(COALESCE(monthly_workload.workload, 0)), 0) AS avg_monthly_workload,
+      COALESCE(AVG(material_consumption), 0) AS avg_monthly_material_consumption,
+      COALESCE(SUM(monthly_workload.invalid_planned_duration_count), 0) AS invalid_planned_duration_count
     FROM monthly
+    LEFT JOIN monthly_workload USING (month)
   `, filters.params);
   const avg = result.rows[0] || {};
+  logInvalidPlannedDurations('Executive - Forecast Workload', [avg]);
   const monthlyRequests = n(avg.avg_monthly_requests);
   const monthlyCompletions = n(avg.avg_monthly_completions);
   const monthlyWorkload = n(avg.avg_monthly_workload);
@@ -496,19 +567,18 @@ const getTopLists = async (query = {}) => {
       LIMIT 10
     `, filters.params),
     db.query(`
-      SELECT id, request_number, title,
-        COALESCE(actual_duration,
-          CASE WHEN actual_start_time IS NOT NULL AND actual_end_time IS NOT NULL THEN EXTRACT(EPOCH FROM (actual_end_time - actual_start_time)) / 3600 END,
-          CASE
-            WHEN planned_start_date IS NOT NULL
-             AND planned_end_date IS NOT NULL
-             AND planned_end_date > planned_start_date
-            THEN EXTRACT(EPOCH FROM (planned_end_date - planned_start_date)) / 3600.0
-          END,
-          0
-        ) AS value
+      SELECT
+        r.id,
+        r.request_number,
+        r.title,
+        ROUND(COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0)::NUMERIC, 1) AS value,
+        COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
       FROM print_requests r
+      JOIN request_production_cycles pc ON pc.request_id = r.id
       ${filters.where}
+        AND r.status IN (${COMPLETED})
+        AND pc.end_time IS NOT NULL
+      GROUP BY r.id, r.request_number, r.title
       ORDER BY value DESC
       LIMIT 10
     `, filters.params),
@@ -544,6 +614,7 @@ const getTopLists = async (query = {}) => {
       LIMIT 10
     `, filters.params),
   ]);
+  logInvalidPlannedDurations('Executive - Top 10 Longest Prints', longest.rows);
   return {
     mostExpensiveRequests: expensive.rows,
     longestPrints: longest.rows,

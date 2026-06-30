@@ -5,6 +5,7 @@ const {
   reserveMaterial,
   consumeMaterial,
   releaseReservation,
+  releaseRemainingReservationAfterProduction,
   consumeMaterialForCompletedRequest,
 } = require('../services/materialService');
 const { sendRequesterStatusEmail, REQUESTER_STATUS_EMAILS } = require('../services/emailService');
@@ -567,9 +568,9 @@ exports.getRequest = async (req, res) => {
               COALESCE(NULLIF(pc.requested_quantity, 0),
                        CASE WHEN pc.cycle_number = 1 THEN r.quantity ELSE pc.printed_quantity END,
                        0) AS requested_quantity,
-              (COALESCE(NULLIF(pc.requested_quantity, 0),
-                        CASE WHEN pc.cycle_number = 1 THEN r.quantity ELSE pc.printed_quantity END,
-                        0) * COALESCE(r.production_material_usage_per_part, 0)) AS material_reserved,
+              COALESCE(NULLIF(pc.material_used, 0),
+                       CASE WHEN pc.cycle_number = 1 THEN r.production_total_material_usage ELSE 0 END,
+                       0) AS material_reserved,
               COALESCE((
                 SELECT qc.validated_quantity_checked
                 FROM quality_checks qc
@@ -579,16 +580,14 @@ exports.getRequest = async (req, res) => {
                 LIMIT 1
               ), 0) AS validated_quantity,
               COALESCE(NULLIF(pc.print_time_minutes, 0),
-                       COALESCE(r.production_print_time_per_part_minutes, 0)
-                         * COALESCE(NULLIF(pc.requested_quantity, 0), CASE WHEN pc.cycle_number = 1 THEN r.quantity ELSE pc.printed_quantity END, 0),
+                       CASE WHEN pc.cycle_number = 1 THEN r.production_total_print_time_minutes ELSE 0 END,
                        0) AS print_time_minutes,
               COALESCE(NULLIF(pc.material_cost, 0),
                        COALESCE(pc.material_used, 0) * COALESCE(m.cost_per_unit, r.price_per_kg / 1000.0, 0),
                        0) AS material_cost,
               COALESCE(NULLIF(pc.machine_cost, 0),
                        COALESCE(NULLIF(pc.print_time_minutes, 0),
-                                COALESCE(r.production_print_time_per_part_minutes, 0)
-                                  * COALESCE(NULLIF(pc.requested_quantity, 0), CASE WHEN pc.cycle_number = 1 THEN r.quantity ELSE pc.printed_quantity END, 0),
+                                CASE WHEN pc.cycle_number = 1 THEN r.production_total_print_time_minutes ELSE 0 END,
                                 0) * COALESCE(p.cost_per_minute, 0),
                        0) AS machine_cost,
               COALESCE(pc.fixed_cost, 0) AS fixed_cost,
@@ -596,8 +595,7 @@ exports.getRequest = async (req, res) => {
                        COALESCE(NULLIF(pc.material_cost, 0), COALESCE(pc.material_used, 0) * COALESCE(m.cost_per_unit, r.price_per_kg / 1000.0, 0), 0)
                        + COALESCE(NULLIF(pc.machine_cost, 0),
                                   COALESCE(NULLIF(pc.print_time_minutes, 0),
-                                           COALESCE(r.production_print_time_per_part_minutes, 0)
-                                             * COALESCE(NULLIF(pc.requested_quantity, 0), CASE WHEN pc.cycle_number = 1 THEN r.quantity ELSE pc.printed_quantity END, 0),
+                                           CASE WHEN pc.cycle_number = 1 THEN r.production_total_print_time_minutes ELSE 0 END,
                                            0) * COALESCE(p.cost_per_minute, 0),
                                   0)
                        + COALESCE(pc.fixed_cost, 0),
@@ -1050,6 +1048,8 @@ exports.updateStatus = async (req, res) => {
       planned_end_manually_adjusted,
       production_material_usage_per_part,
       production_print_time_per_part_minutes,
+      production_total_material_usage,
+      production_total_print_time_minutes,
       material_reserved_qty,
       material_reserved_spool,
       material_used_grams,
@@ -1126,8 +1126,14 @@ exports.updateStatus = async (req, res) => {
       const effectiveMaterialId = bodyMaterialId || r.material_id;
       const effectivePrinterId = bodyPrinterId || r.printer_id;
       const effectiveQuantity = parseFloat(bodyQuantity !== undefined ? bodyQuantity : r.quantity);
-      const materialUsagePerPart = parseFloat(production_material_usage_per_part);
-      const printTimePerPartMinutes = parseFloat(production_print_time_per_part_minutes);
+      const totalMaterialUsageInput = production_total_material_usage !== undefined
+        ? production_total_material_usage
+        : production_material_usage_per_part;
+      const totalPrintTimeInput = production_total_print_time_minutes !== undefined
+        ? production_total_print_time_minutes
+        : production_print_time_per_part_minutes;
+      const totalMaterialUsage = roundMoney(parseFloat(totalMaterialUsageInput));
+      const totalPrintTimeMinutes = roundMoney(parseFloat(totalPrintTimeInput));
 
       if (!effectiveMaterialId) {
         await client.query('ROLLBACK');
@@ -1137,13 +1143,13 @@ exports.updateStatus = async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Printer is required before moving the request to Planned.' });
       }
-      if (!Number.isFinite(materialUsagePerPart) || materialUsagePerPart <= 0) {
+      if (!Number.isFinite(totalMaterialUsage) || totalMaterialUsage <= 0) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Material Usage Per Part is required and must be greater than zero.' });
+        return res.status(400).json({ error: 'Total Material Usage is required and must be greater than zero.' });
       }
-      if (!Number.isFinite(printTimePerPartMinutes) || printTimePerPartMinutes <= 0) {
+      if (!Number.isFinite(totalPrintTimeMinutes) || totalPrintTimeMinutes <= 0) {
         await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Print Time Per Part is required and must be greater than zero.' });
+        return res.status(400).json({ error: 'Total Print Time is required and must be greater than zero.' });
       }
       if (!Number.isFinite(effectiveQuantity) || effectiveQuantity <= 0) {
         await client.query('ROLLBACK');
@@ -1157,8 +1163,6 @@ exports.updateStatus = async (req, res) => {
       if (bodyMaterialId)     extraUpdates.material_id        = bodyMaterialId;
       if (bodyQuantity !== undefined) extraUpdates.quantity   = bodyQuantity;
 
-      const totalMaterialUsage = roundMoney(materialUsagePerPart * effectiveQuantity);
-      const totalPrintTimeMinutes = roundMoney(printTimePerPartMinutes * effectiveQuantity);
       const rates = await getConfiguredRates({
         materialId: effectiveMaterialId,
         printerId: effectivePrinterId,
@@ -1204,8 +1208,8 @@ exports.updateStatus = async (req, res) => {
 
       extraUpdates.planned_start_date = planned_start_date;
       extraUpdates.planned_end_date = effectivePlannedEndDate;
-      extraUpdates.production_material_usage_per_part = materialUsagePerPart;
-      extraUpdates.production_print_time_per_part_minutes = printTimePerPartMinutes;
+      extraUpdates.production_material_usage_per_part = totalMaterialUsage;
+      extraUpdates.production_print_time_per_part_minutes = totalPrintTimeMinutes;
       extraUpdates.production_total_material_usage = totalMaterialUsage;
       extraUpdates.production_total_print_time_minutes = totalPrintTimeMinutes;
       extraUpdates.material_reserved_qty = totalMaterialUsage;
@@ -1222,8 +1226,8 @@ exports.updateStatus = async (req, res) => {
           material_id: effectiveMaterialId,
           printer_id: effectivePrinterId,
           quantity: effectiveQuantity,
-          production_material_usage_per_part: materialUsagePerPart,
-          production_print_time_per_part_minutes: printTimePerPartMinutes,
+          production_material_usage_per_part: totalMaterialUsage,
+          production_print_time_per_part_minutes: totalPrintTimeMinutes,
           production_total_material_usage: totalMaterialUsage,
           production_total_print_time_minutes: totalPrintTimeMinutes,
           material_cost: plannedCost.materialCost,
@@ -1285,9 +1289,9 @@ exports.updateStatus = async (req, res) => {
         const requestedQty = parseFloat(r.quantity || 0);
         const totals = await getProductionQuantityTotals(client, id, requestedQty);
         const remainingQty = totals.missingProductionQuantity;
-        const materialUsagePerPart = parseFloat(r.production_material_usage_per_part || 0);
-        const additionalReservedMaterial = Number.isFinite(materialUsagePerPart)
-          ? roundMoney(materialUsagePerPart * remainingQty)
+        const plannedTotalMaterialUsage = parseFloat(r.production_total_material_usage || r.production_material_usage_per_part || 0);
+        const additionalReservedMaterial = Number.isFinite(plannedTotalMaterialUsage)
+          ? roundMoney(plannedTotalMaterialUsage)
           : 0;
         if (remainingQty > 0 && additionalReservedMaterial > 0) {
           try {
@@ -1312,7 +1316,7 @@ exports.updateStatus = async (req, res) => {
               performedByName: getUserName(req.user),
               newValues: {
                 missing_production_quantity: remainingQty,
-                material_usage_per_part: materialUsagePerPart,
+                total_material_usage: plannedTotalMaterialUsage,
                 additional_reserved_material: additionalReservedMaterial,
               },
             });
@@ -1397,8 +1401,16 @@ exports.updateStatus = async (req, res) => {
       if (machine_downtime_hours !== undefined) extraUpdates.machine_downtime_hours = machine_downtime_hours;
       if (machine_pause_reason) extraUpdates.machine_pause_reason = machine_pause_reason;
       if (material_used_grams !== undefined) {
-        // Validate vs reserved qty
-        const reservedQty = parseFloat(r.material_reserved_qty || 0);
+        const activeReservation = await client.query(
+          `SELECT reserved_qty
+           FROM material_reservations
+           WHERE request_id = $1 AND status = 'reserved'
+           ORDER BY reserved_at ASC, id ASC
+           LIMIT 1`,
+          [id]
+        ).catch(() => ({ rows: [] }));
+        // Validate vs the current production cycle reservation, not the request's cumulative reservation total.
+        const reservedQty = parseFloat(activeReservation.rows[0]?.reserved_qty || r.material_reserved_qty || 0);
         const consumedQty = parseFloat(material_used_grams);
         if (reservedQty > 0 && consumedQty > reservedQty * 1.1) {
           // Allow 10% tolerance, block beyond that
@@ -1443,11 +1455,11 @@ exports.updateStatus = async (req, res) => {
       const cycleTargetQuantity = r.rework_required && remainingBeforeCycle > 0
         ? remainingBeforeCycle
         : requestedQty;
-      const materialUsagePerPart = parseFloat(r.production_material_usage_per_part || 0);
-      const printTimePerPartMinutes = parseFloat(r.production_print_time_per_part_minutes || 0);
+      const plannedTotalMaterialUsage = parseFloat(r.production_total_material_usage || r.production_material_usage_per_part || 0);
+      const plannedTotalPrintTimeMinutes = parseFloat(r.production_total_print_time_minutes || r.production_print_time_per_part_minutes || 0);
       if (Number.isFinite(cycleTargetQuantity) && cycleTargetQuantity > 0
-        && Number.isFinite(materialUsagePerPart) && materialUsagePerPart > 0
-        && Number.isFinite(printTimePerPartMinutes) && printTimePerPartMinutes > 0
+        && Number.isFinite(plannedTotalMaterialUsage) && plannedTotalMaterialUsage > 0
+        && Number.isFinite(plannedTotalPrintTimeMinutes) && plannedTotalPrintTimeMinutes > 0
         && r.material_id && r.printer_id) {
         const rates = await getConfiguredRates({
           materialId: r.material_id,
@@ -1455,14 +1467,14 @@ exports.updateStatus = async (req, res) => {
           client,
         });
         const cycleCost = calculateConfiguredCost({
-          materialUsage: roundMoney(materialUsagePerPart * cycleTargetQuantity),
-          printTimeMinutes: roundMoney(printTimePerPartMinutes * cycleTargetQuantity),
+          materialUsage: roundMoney(plannedTotalMaterialUsage),
+          printTimeMinutes: roundMoney(plannedTotalPrintTimeMinutes),
           materialCostPerUnit: rates.materialCostPerUnit,
           printerCostPerMinute: rates.printerCostPerMinute,
           includeFixedCost: true,
         });
         if (cycleCost) {
-          cyclePrintTimeMinutes = roundMoney(printTimePerPartMinutes * cycleTargetQuantity);
+          cyclePrintTimeMinutes = roundMoney(plannedTotalPrintTimeMinutes);
           cycleMaterialCost = cycleCost.materialCost;
           cycleMachineCost = cycleCost.machineCost;
           cycleFixedCost = cycleCost.fixedCost;
@@ -1511,7 +1523,18 @@ exports.updateStatus = async (req, res) => {
       });
     }
     if (status === 'quality_check')    { extraUpdates.qc_started_at = 'NOW()'; }
-    if (status === 'ready_for_pickup') { extraUpdates.ready_at      = 'NOW()'; }
+    if (status === 'ready_for_pickup') {
+      extraUpdates.ready_at = 'NOW()';
+      await releaseRemainingReservationAfterProduction(client, {
+        requestId: id,
+        performedBy: req.user.id,
+        performedByName: getUserName(req.user),
+      }).catch((err) => {
+        console.warn('[Material] Completed Awaiting Confirmation release warning:', err.message);
+      });
+      extraUpdates.material_reserved = false;
+      extraUpdates.material_reserved_qty = 0;
+    }
     if (status === 'requester_confirmation') {
       extraUpdates.ready_at = 'NOW()';
       extraUpdates.completion_date = r.completion_date || 'NOW()';

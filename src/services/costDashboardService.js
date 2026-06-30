@@ -1,5 +1,11 @@
 const db = require('../config/database');
 const { FIXED_COST } = require('./costConfig');
+const {
+  completedReworkCycleHoursSql,
+  invalidPlannedDurationSql,
+  logInvalidPlannedDurations,
+  reworkCycleSql,
+} = require('./dashboardMetricsService');
 
 
 const moneyNumber = (value) => {
@@ -217,19 +223,15 @@ const getReworkCostSummary = async (filters = {}) => {
     SELECT
       COALESCE(SUM(pc.actual_cost), 0) AS total_rework_cost,
       COALESCE(SUM(pc.material_used), 0) AS rework_material_used,
-      COALESCE(SUM(
-        CASE
-          WHEN pc.start_time IS NOT NULL AND pc.end_time IS NOT NULL
-          THEN EXTRACT(EPOCH FROM (pc.end_time - pc.start_time)) / 3600
-          ELSE 0
-        END
-      ), 0) AS rework_print_hours
+      COALESCE(SUM(${completedReworkCycleHoursSql('r', 'pc')}), 0) AS rework_print_hours,
+      COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
     FROM print_requests r
-    JOIN request_production_cycles pc ON pc.request_id = r.id AND pc.cycle_number > 1
+    JOIN request_production_cycles pc ON pc.request_id = r.id AND ${reworkCycleSql('pc')}
     ${where}
   `, params);
 
   const row = result.rows[0] || {};
+  logInvalidPlannedDurations('Cost - Rework Print Hours', [row]);
   return {
     totalReworkCost: moneyNumber(row.total_rework_cost),
     reworkMaterialUsed: moneyNumber(row.rework_material_used),
