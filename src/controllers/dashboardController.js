@@ -581,14 +581,15 @@ exports.getPerformanceDashboard = async (req, res) => {
 
       // Technician production performance
       db.query(`
-        WITH cycle_hours AS (
+        WITH managed_requests AS (
           SELECT
             r.assigned_technician_id,
-            ROUND(COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0)::NUMERIC, 1) AS actual_print_hours,
-            COUNT(*) FILTER (WHERE ${invalidPlannedDurationSql('r')}) AS invalid_planned_duration_count
+            COUNT(DISTINCT r.id) AS requests_managed
           FROM print_requests r
           JOIN request_production_cycles pc ON pc.request_id = r.id
-          WHERE ${historicalCompletedStatusesFor('r')}
+          WHERE COALESCE(r.source, 'application') <> 'monday'
+            AND r.assigned_technician_id IS NOT NULL
+            AND r.status NOT IN ('cancelled','rejected')
             ${aliasFilter.sql}
             ${hasExplicitDateFilter ? '' : `AND COALESCE(pc.end_time, r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
           GROUP BY r.assigned_technician_id
@@ -606,20 +607,19 @@ exports.getPerformanceDashboard = async (req, res) => {
         )
         SELECT
           u.first_name || ' ' || u.last_name AS technician,
-          COALESCE(ch.actual_print_hours, 0) AS actual_print_hours,
+          COALESCE(mr.requests_managed, 0) AS requests_managed,
           COALESCE(rt.material_consumed, 0) AS material_consumed,
-          COALESCE(rt.actual_cost_managed, 0) AS actual_cost_managed,
-          COALESCE(ch.invalid_planned_duration_count, 0) AS invalid_planned_duration_count
+          COALESCE(rt.actual_cost_managed, 0) AS actual_cost_managed
         FROM users u
-        LEFT JOIN cycle_hours ch ON ch.assigned_technician_id = u.id
+        LEFT JOIN managed_requests mr ON mr.assigned_technician_id = u.id
         LEFT JOIN request_totals rt ON rt.assigned_technician_id = u.id
         WHERE u.role IN (${roleSqlList(PRODUCTION_TECHNICIAN_ALIASES)}) AND u.is_active = true
           AND (
-            COALESCE(ch.actual_print_hours, 0) > 0
+            COALESCE(mr.requests_managed, 0) > 0
             OR COALESCE(rt.material_consumed, 0) > 0
             OR COALESCE(rt.actual_cost_managed, 0) > 0
           )
-        ORDER BY actual_print_hours DESC, actual_cost_managed DESC
+        ORDER BY requests_managed DESC, actual_cost_managed DESC
       `, aliasFilter.params),
 
       // Monthly actual cost trend
@@ -706,7 +706,6 @@ exports.getPerformanceDashboard = async (req, res) => {
     logInvalidPlannedDurations('Performance - Technician Average Duration', techPerf.rows);
     logInvalidPlannedDurations('Performance - Rework Analysis', reworkAnalysis.rows);
     logInvalidPlannedDurations('Performance - Printer Performance', printerPerformance.rows);
-    logInvalidPlannedDurations('Performance - Technician Production Performance', technicianPerformance.rows);
 
     const onTimeData = onTime.rows[0];
     const onTimeRate = onTimeData.total > 0
