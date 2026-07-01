@@ -10,6 +10,246 @@ const positiveNumber = (value) => {
   return Number.isFinite(n) && n > 0;
 };
 const actorName = (user) => [user.first_name, user.last_name].filter(Boolean).join(' ') || user.email || user.id;
+const USER_DELETE_BLOCKED_FALLBACK_MESSAGE = 'This user has historical data and cannot be deleted. Please deactivate the account instead.';
+const USER_REFERENCE_LABELS = {
+  audit_logs: 'Audit Logs',
+  feasibility_reviews: 'Feasibility Reviews',
+  file_download_logs: 'File Download Logs',
+  material_movements: 'Material Movements',
+  material_reservations: 'Material Reservations',
+  material_transactions: 'Material Transactions',
+  monday_import_history: 'Monday Import History',
+  notifications: 'Notifications',
+  print_requests: 'Print Requests',
+  printer_maintenance_events: 'Printer Maintenance Events',
+  quality_checks: 'Quality Checks',
+  request_comments: 'Request Comments',
+  request_production_cycles: 'Production Cycles',
+  status_history: 'Status History',
+};
+
+const safeIdentifier = (value) => {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(value)) throw new Error(`Unsafe SQL identifier: ${value}`);
+  return `"${value}"`;
+};
+
+const safeQualifiedIdentifier = (value) => value.split('.').map(safeIdentifier).join('.');
+const safeColumn = (columnName, alias = 't') => `${alias}.${safeIdentifier(columnName)}`;
+
+const tableKey = (tableName) => tableName.includes('.') ? tableName.split('.').pop() : tableName;
+const hasColumn = (columns, columnName) => columns.includes(columnName);
+
+const humanizeTableName = (tableName) => {
+  const key = tableKey(tableName);
+  if (USER_REFERENCE_LABELS[key]) return USER_REFERENCE_LABELS[key];
+  return key
+    .split('_')
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+};
+
+const buildUserDeleteBlockedMessage = (references, totalReferences) => {
+  const lines = references.flatMap(ref => [
+    `• ${humanizeTableName(ref.table)} (${ref.count})`,
+    `  Example: ${ref.example || ref.fallbackExample || 'Record unavailable'}`,
+    '',
+  ]);
+  return [
+    'This user cannot be deleted because historical data still references this account.',
+    '',
+    'References found:',
+    '',
+    ...lines,
+    `Total References: ${totalReferences}`,
+    '',
+    'Recommended Action',
+    '',
+    'Deactivate this account from:',
+    '',
+    'Administration -> Users',
+    '',
+    'Historical records must remain linked to the original user for traceability.',
+    '',
+    'Physical deletion is only permitted for users with no historical references.',
+  ].join('\n');
+};
+
+const buildCoalesceExpression = (parts, fallback) => `COALESCE(${[...parts, fallback].join(', ')})`;
+
+const getExampleConfig = (tableName, columns) => {
+  const key = tableKey(tableName);
+  const joins = [];
+  const parts = [];
+  const fallback = hasColumn(columns, 'id') ? `${safeColumn('id')}::text` : `'Record unavailable'`;
+  const addColumn = (columnName) => {
+    if (hasColumn(columns, columnName)) parts.push(`NULLIF(${safeColumn(columnName)}::text, '')`);
+  };
+  const addRequestJoin = () => {
+    if (hasColumn(columns, 'request_id')) {
+      joins.push('LEFT JOIN print_requests r ON r.id = t.request_id');
+      parts.push("NULLIF(r.request_number::text, '')");
+    }
+  };
+
+  switch (key) {
+    case 'print_requests':
+      addColumn('request_number');
+      addColumn('title');
+      break;
+    case 'quality_checks':
+      addRequestJoin();
+      parts.push(`'Quality Check ' || ${fallback}`);
+      break;
+    case 'request_production_cycles':
+      if (hasColumn(columns, 'cycle_number')) parts.push(`'Cycle #' || ${safeColumn('cycle_number')}::text`);
+      addRequestJoin();
+      break;
+    case 'feasibility_reviews':
+      addRequestJoin();
+      addColumn('result');
+      break;
+    case 'request_comments':
+      parts.push(`'Comment ' || ${fallback}`);
+      break;
+    case 'audit_logs':
+      addColumn('action');
+      break;
+    case 'notifications':
+      addColumn('title');
+      addColumn('type');
+      break;
+    case 'material_transactions':
+      addRequestJoin();
+      addColumn('spool_reference');
+      addColumn('transaction_type');
+      break;
+    case 'material_movements':
+      addRequestJoin();
+      addColumn('reference');
+      addColumn('movement_type');
+      break;
+    case 'material_reservations':
+      addRequestJoin();
+      addColumn('spool_reference');
+      addColumn('status');
+      break;
+    case 'printer_maintenance_events':
+      if (hasColumn(columns, 'maintenance_type') && hasColumn(columns, 'maintenance_date')) {
+        parts.push(`${safeColumn('maintenance_type')}::text || ' maintenance on ' || ${safeColumn('maintenance_date')}::text`);
+      }
+      parts.push(`'Maintenance Event ' || ${fallback}`);
+      break;
+    case 'status_history':
+      if (hasColumn(columns, 'to_status')) parts.push(`'Status changed to ' || ${safeColumn('to_status')}::text`);
+      addColumn('from_status');
+      break;
+    case 'file_download_logs':
+      if (hasColumn(columns, 'attachment_id')) {
+        joins.push('LEFT JOIN request_attachments a ON a.id = t.attachment_id');
+        parts.push("NULLIF(a.original_name::text, '')");
+        parts.push("NULLIF(a.file_name::text, '')");
+      }
+      addRequestJoin();
+      break;
+    case 'monday_import_history':
+      addColumn('file_name');
+      break;
+    case 'request_attachments':
+      addColumn('original_name');
+      addColumn('file_name');
+      break;
+    case 'notification_history':
+      addColumn('subject');
+      addColumn('type');
+      break;
+    case 'request_satisfaction_surveys':
+      addRequestJoin();
+      if (hasColumn(columns, 'overall_rating')) parts.push(`'Satisfaction rating ' || ${safeColumn('overall_rating')}::text`);
+      break;
+    default:
+      ['request_number', 'title', 'subject', 'name', 'file_name', 'original_name', 'reference', 'action', 'type', 'status'].forEach(addColumn);
+      addRequestJoin();
+      break;
+  }
+
+  return {
+    joins: [...new Set(joins)].join(' '),
+    expression: buildCoalesceExpression(parts, fallback),
+  };
+};
+
+const getOrderExpression = (columns) => {
+  const orderColumns = ['created_at', 'updated_at', 'check_date', 'review_date', 'downloaded_at', 'reserved_at', 'maintenance_date'];
+  const found = orderColumns.find(columnName => hasColumn(columns, columnName));
+  const fallback = hasColumn(columns, 'id') ? `${safeColumn('id')} ASC` : '1';
+  return found ? `${safeColumn(found)} DESC NULLS LAST, ${fallback}` : fallback;
+};
+
+const getUserReferenceCounts = async (userId) => {
+  const references = await db.query(`
+    SELECT
+      c.conrelid::regclass::text AS table_name,
+      a.attname AS column_name,
+      ARRAY(
+        SELECT ca.attname
+        FROM pg_attribute ca
+        WHERE ca.attrelid = c.conrelid
+          AND ca.attnum > 0
+          AND NOT ca.attisdropped
+      ) AS columns
+    FROM pg_constraint c
+    JOIN unnest(c.conkey) WITH ORDINALITY AS ck(attnum, ord) ON true
+    JOIN unnest(c.confkey) WITH ORDINALITY AS fk(attnum, ord) ON ck.ord = fk.ord
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ck.attnum
+    JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = fk.attnum
+    WHERE c.contype = 'f'
+      AND c.confrelid = 'users'::regclass
+      AND fa.attname = 'id'
+    ORDER BY table_name, column_name
+  `);
+
+  const referencesByTable = references.rows.reduce((acc, ref) => {
+    if (!acc[ref.table_name]) {
+      acc[ref.table_name] = {
+        table: ref.table_name,
+        columns: ref.columns || [],
+        referenceColumns: [],
+      };
+    }
+    if (!acc[ref.table_name].referenceColumns.includes(ref.column_name)) {
+      acc[ref.table_name].referenceColumns.push(ref.column_name);
+    }
+    return acc;
+  }, {});
+
+  const counts = [];
+  for (const ref of Object.values(referencesByTable)) {
+    const tableName = ref.table;
+    const columns = ref.columns || [];
+    const example = getExampleConfig(tableName, columns);
+    const where = ref.referenceColumns.map(columnName => `${safeColumn(columnName)} = $1`).join(' OR ');
+    const count = await db.query(
+      `
+        SELECT COUNT(*) OVER()::int AS count, ${example.expression} AS example
+        FROM ${safeQualifiedIdentifier(tableName)} t
+        ${example.joins}
+        WHERE ${where}
+        ORDER BY ${getOrderExpression(columns)}
+        LIMIT 1
+      `,
+      [userId]
+    );
+    counts.push({
+      table: tableName,
+      columns: ref.referenceColumns,
+      count: count.rows[0]?.count || 0,
+      example: count.rows[0]?.example || null,
+    });
+  }
+
+  return counts;
+};
 
 // USERS
 exports.getUsers = async (req, res) => {
@@ -65,16 +305,77 @@ exports.updateUser = async (req, res) => {
   } catch (err) { console.error(err); res.status(500).json({ error: 'Server error' }); }
 };
 
-// Admin: delete user (soft-delete — set inactive)
+// Admin: physically delete only users with no historical references.
 exports.deleteUser = async (req, res) => {
+  const { id } = req.params;
+  console.info('[Admin] User delete requested', { userId: id, requestedBy: req.user?.id });
+
   try {
-    const { id } = req.params;
     // Prevent deleting yourself
-    if (id === req.user.id)
+    if (id === req.user.id) {
+      console.warn('[Admin] User deletion blocked: self-delete attempt', { userId: id });
       return res.status(400).json({ error: 'Cannot delete your own account' });
-    await db.query('UPDATE users SET is_active = false WHERE id = $1', [id]);
-    res.json({ message: 'User deactivated' });
-  } catch (err) { res.status(500).json({ error: 'Server error' }); }
+    }
+
+    const before = await db.query('SELECT id, email, first_name, last_name FROM users WHERE id = $1', [id]);
+    if (!before.rows[0]) {
+      console.warn('[Admin] User deletion failed: user not found', { userId: id });
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const referenceCounts = await getUserReferenceCounts(id);
+    const blockingReferencesByTable = referenceCounts.reduce((acc, ref) => {
+      if (ref.count > 0) {
+        if (!acc[ref.table]) acc[ref.table] = { table: ref.table, count: 0, examples: [] };
+        acc[ref.table].count += ref.count;
+        if (ref.example) acc[ref.table].examples.push(ref.example);
+      }
+      return acc;
+    }, {});
+    const blockingReferences = Object.values(blockingReferencesByTable)
+      .map(ref => ({
+        table: ref.table,
+        count: ref.count,
+        example: ref.examples[0] || null,
+      }))
+      .sort((a, b) => humanizeTableName(a.table).localeCompare(humanizeTableName(b.table)));
+    const totalReferences = blockingReferences.reduce((sum, ref) => sum + ref.count, 0);
+
+    if (blockingReferences.length > 0) {
+      console.warn('[Admin] User deletion blocked: historical data exists', {
+        userId: id,
+        blockingTables: blockingReferences,
+        totalReferences,
+      });
+      return res.status(409).json({
+        error: buildUserDeleteBlockedMessage(blockingReferences, totalReferences),
+        blockingTables: blockingReferences,
+        totalReferences,
+      });
+    }
+
+    const result = await db.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+    if (!result.rows[0]) {
+      console.warn('[Admin] User deletion failed: user not found during delete', { userId: id });
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.info('[Admin] User deletion succeeded', { userId: id });
+    res.json({ message: 'User deleted' });
+  } catch (err) {
+    console.error('[Admin] User deletion SQL error', {
+      userId: id,
+      code: err.code,
+      detail: err.detail,
+      message: err.message,
+    });
+
+    if (err.code === '23503') {
+      return res.status(409).json({ error: USER_DELETE_BLOCKED_FALLBACK_MESSAGE });
+    }
+
+    res.status(500).json({ error: 'Server error' });
+  }
 };
 
 // PRINTERS
