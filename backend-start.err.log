@@ -1,0 +1,44 @@
+[Inventory] Material Cost Missing [
+  {
+    id: 'f05a394f-aa1d-4b41-b13e-9a2f2f965aab',
+    name: 'PETG Black',
+    stock_quantity: '2400.00'
+  },
+  {
+    id: '62b4265e-d087-4d1a-91b2-2461882dadcd',
+    name: 'PLA Black',
+    stock_quantity: '6000.00'
+  },
+  {
+    id: 'c9634f76-927c-44ed-b6a1-39ebf651ef94',
+    name: 'PLA Grey',
+    stock_quantity: '7000.00'
+  },
+  {
+    id: '9465945c-c104-431b-9474-677b117bb18a',
+    name: 'PLA White',
+    stock_quantity: '4600.00'
+  }
+]
+[Inventory] Material Cost Missing [
+  {
+    id: 'f05a394f-aa1d-4b41-b13e-9a2f2f965aab',
+    name: 'PETG Black',
+    stock_quantity: '2400.00'
+  },
+  {
+    id: '62b4265e-d087-4d1a-91b2-2461882dadcd',
+    name: 'PLA Black',
+    stock_quantity: '6000.00'
+  },
+  {
+    id: 'c9634f76-927c-44ed-b6a1-39ebf651ef94',
+    name: 'PLA Grey',
+    stock_quantity: '7000.00'
+  },
+  {
+    id: '9465945c-c104-431b-9474-677b117bb18a',
+    name: 'PLA White',
+    stock_quantity: '4600.00'
+  }
+]

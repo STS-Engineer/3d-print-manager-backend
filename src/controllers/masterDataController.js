@@ -1,7 +1,7 @@
 const db = require('../config/database');
 const bcrypt = require('bcryptjs');
 const { createAuditLog } = require('../middleware/auditLog');
-const { checkMaterialLowStock } = require('../services/materialService');
+const { checkMaterialLowStock, syncMaterialReservationStock } = require('../services/materialService');
 const { normalizeRole } = require('../utils/roles');
 
 const validCurrency = (value) => /^[A-Z]{3}$/.test(String(value || '').trim());
@@ -280,6 +280,35 @@ exports.updateUser = async (req, res) => {
   try {
     const { id } = req.params;
     const { first_name, last_name, department, role, is_active, new_password } = req.body;
+    const normalizedRole = role ? normalizeRole(role) : role;
+    const before = await db.query('SELECT id, email, first_name, last_name, role FROM users WHERE id = $1', [id]);
+    if (!before.rows[0]) return res.status(404).json({ error: 'User not found' });
+    const isProtectedAdministrator = before.rows[0].role === 'administrator' || normalizedRole === 'administrator';
+
+    if (before.rows[0].role === 'administrator' && normalizedRole && normalizedRole !== 'administrator') {
+      await createAuditLog({
+        entityType: 'user',
+        entityId: id,
+        action: 'Protected Administrator Role Change Blocked',
+        performedBy: req.user?.id,
+        performedByName: actorName(req.user || {}),
+        oldValues: {
+          targetUser: actorName(before.rows[0]),
+          targetEmail: before.rows[0].email,
+          role: before.rows[0].role,
+        },
+        newValues: {
+          attemptedRole: normalizedRole,
+          reason: 'Administrator role is protected.',
+        },
+        ipAddress: req.ip,
+      });
+      return res.status(403).json({ error: 'Administrator accounts are protected and their role cannot be changed.' });
+    }
+
+    if (isProtectedAdministrator && is_active === false) {
+      return res.status(403).json({ error: 'Administrator accounts cannot be deactivated.' });
+    }
 
     // Admin can reset password without old password
     if (new_password) {
@@ -299,7 +328,7 @@ exports.updateUser = async (req, res) => {
         is_active   = COALESCE($5, is_active)
       WHERE id = $6
       RETURNING id, email, first_name, last_name, department, role, is_active
-    `, [first_name, last_name, department, role ? normalizeRole(role) : role, is_active, id]);
+    `, [first_name, last_name, department, normalizedRole, is_active, id]);
     if (!result.rows[0]) return res.status(404).json({ error: 'User not found' });
     res.json(result.rows[0]);
   } catch (err) { console.error(err); res.status(500).json({ error: 'Server error' }); }
@@ -311,16 +340,19 @@ exports.deleteUser = async (req, res) => {
   console.info('[Admin] User delete requested', { userId: id, requestedBy: req.user?.id });
 
   try {
+    const before = await db.query('SELECT id, email, first_name, last_name, role FROM users WHERE id = $1', [id]);
+    if (!before.rows[0]) {
+      console.warn('[Admin] User deletion failed: user not found', { userId: id });
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (before.rows[0].role === 'administrator') {
+      console.warn('[Admin] User deletion blocked: protected administrator', { userId: id });
+      return res.status(403).json({ error: 'Administrator accounts cannot be deleted.' });
+    }
     // Prevent deleting yourself
     if (id === req.user.id) {
       console.warn('[Admin] User deletion blocked: self-delete attempt', { userId: id });
       return res.status(400).json({ error: 'Cannot delete your own account' });
-    }
-
-    const before = await db.query('SELECT id, email, first_name, last_name FROM users WHERE id = $1', [id]);
-    if (!before.rows[0]) {
-      console.warn('[Admin] User deletion failed: user not found', { userId: id });
-      return res.status(404).json({ error: 'User not found' });
     }
 
     const referenceCounts = await getUserReferenceCounts(id);
@@ -520,27 +552,44 @@ exports.getMaterials = async (req, res) => {
         WHERE transaction_type = 'consumption'
           AND created_at > NOW() - INTERVAL '90 days'
         GROUP BY material_id
+      ),
+      active_reserved AS (
+        SELECT mr.material_id, COALESCE(SUM(mr.reserved_qty), 0) AS reserved_qty
+        FROM material_reservations mr
+        JOIN print_requests r ON r.id = mr.request_id
+        WHERE mr.status = 'reserved'
+          AND r.status NOT IN (
+            'ready_for_pickup',
+            'requester_confirmation',
+            'waiting_customer_confirmation',
+            'completed',
+            'archived',
+            'cancelled',
+            'rejected'
+          )
+        GROUP BY mr.material_id
       )
       SELECT m.*,
-        COALESCE(m.available_quantity, m.stock_quantity, 0) AS available_quantity,
-        COALESCE(m.reserved_quantity, 0) AS reserved_quantity,
+        GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) AS available_quantity,
+        COALESCE(ar.reserved_qty, 0) AS reserved_quantity,
         CASE
-          WHEN COALESCE(m.available_quantity, m.stock_quantity, 0) <= COALESCE(m.low_stock_threshold, 200) THEN true
+          WHEN GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) <= COALESCE(m.low_stock_threshold, 200) THEN true
           ELSE false
         END AS is_low_stock,
         CASE
-          WHEN COALESCE(m.available_quantity, m.stock_quantity, 0) <= COALESCE(m.low_stock_threshold, 200) THEN 'red'
-          WHEN COALESCE(m.available_quantity, m.stock_quantity, 0) <= COALESCE(m.low_stock_threshold, 200) * 1.25 THEN 'orange'
+          WHEN GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) <= COALESCE(m.low_stock_threshold, 200) THEN 'red'
+          WHEN GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) <= COALESCE(m.low_stock_threshold, 200) * 1.25 THEN 'orange'
           ELSE 'green'
         END AS risk_level,
         COALESCE(c.avg_daily_consumption, 0) AS avg_daily_consumption,
         CASE
           WHEN COALESCE(c.avg_daily_consumption, 0) > 0
-          THEN ROUND((COALESCE(m.available_quantity, m.stock_quantity, 0)::NUMERIC / c.avg_daily_consumption)::NUMERIC, 1)
+          THEN ROUND((GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0))::NUMERIC / c.avg_daily_consumption)::NUMERIC, 1)
           ELSE NULL
         END AS days_of_coverage
       FROM materials m
       LEFT JOIN consumption c ON c.material_id = m.id
+      LEFT JOIN active_reserved ar ON ar.material_id = m.id
       WHERE m.is_active = true
       ORDER BY is_low_stock DESC, m.name
     `).catch(() => db.query('SELECT * FROM materials WHERE is_active = true ORDER BY name'));
@@ -631,8 +680,13 @@ exports.updateMaterial = async (req, res) => {
         },
       });
     }
+    const syncedStock = await syncMaterialReservationStock(db, id);
     await checkMaterialLowStock(db, id);
-    res.json(result.rows[0]);
+    res.json({
+      ...result.rows[0],
+      available_quantity: syncedStock?.available_quantity ?? result.rows[0].available_quantity,
+      reserved_quantity: syncedStock?.reserved_quantity ?? result.rows[0].reserved_quantity,
+    });
   } catch (err) { res.status(500).json({ error: 'Server error' }); }
 };
 

@@ -1623,11 +1623,11 @@ exports.updateStatus = async (req, res) => {
       `UPDATE print_requests SET ${setClause.join(', ')} WHERE id = $${idx} RETURNING *`, values
     );
 
-    if (['completed', 'archived'].includes(status)) {
+    if (['requester_confirmation', 'completed', 'archived'].includes(status)) {
       await consumeMaterialForCompletedRequest(client, {
         request: result.rows[0],
         user: req.user,
-      }).catch(err => console.warn('[Material] Final consumption warning:', err.message));
+      }).catch(err => console.warn('[Material] Final reservation release warning:', err.message));
     }
 
     await createStatusHistory(client, id, r.status, status, req.user.id,

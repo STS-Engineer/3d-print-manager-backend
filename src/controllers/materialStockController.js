@@ -14,6 +14,7 @@ const {
   reserveMaterial,
   consumeMaterial,
   releaseReservation,
+  syncMaterialReservationStock,
   checkMaterialLowStock,
 } = require('../services/materialService');
 const { createAuditLog } = require('../middleware/auditLog');
@@ -33,6 +34,14 @@ const riskCaseSql = `
   CASE
     WHEN COALESCE(m.available_quantity, m.stock_quantity, 0) <= COALESCE(m.low_stock_threshold, 200) THEN 'red'
     WHEN COALESCE(m.available_quantity, m.stock_quantity, 0) <= COALESCE(m.low_stock_threshold, 200) * 1.25 THEN 'orange'
+    ELSE 'green'
+  END
+`;
+
+const stockOverviewRiskCaseSql = `
+  CASE
+    WHEN GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) <= COALESCE(m.low_stock_threshold, 200) THEN 'red'
+    WHEN GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) <= COALESCE(m.low_stock_threshold, 200) * 1.25 THEN 'orange'
     ELSE 'green'
   END
 `;
@@ -110,32 +119,49 @@ exports.getStockOverview = async (req, res) => {
         WHERE transaction_type = 'consumption'
           AND created_at > NOW() - INTERVAL '90 days'
         GROUP BY material_id
+      ),
+      active_reserved AS (
+        SELECT mr.material_id, COALESCE(SUM(mr.reserved_qty), 0) AS reserved_qty
+        FROM material_reservations mr
+        JOIN print_requests r ON r.id = mr.request_id
+        WHERE mr.status = 'reserved'
+          AND r.status NOT IN (
+            'ready_for_pickup',
+            'requester_confirmation',
+            'waiting_customer_confirmation',
+            'completed',
+            'archived',
+            'cancelled',
+            'rejected'
+          )
+        GROUP BY mr.material_id
       )
       SELECT
         m.id, m.name, m.type, m.brand, m.color, m.unit,
         m.stock_quantity,
-        COALESCE(m.available_quantity, m.stock_quantity)   AS available_quantity,
-        COALESCE(m.reserved_quantity, 0)                   AS reserved_quantity,
+        GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) AS available_quantity,
+        COALESCE(ar.reserved_qty, 0)                       AS reserved_quantity,
         COALESCE(m.low_stock_threshold, 200)               AS low_stock_threshold,
         CASE
-          WHEN COALESCE(m.available_quantity, m.stock_quantity) <= COALESCE(m.low_stock_threshold, 200)
+          WHEN GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) <= COALESCE(m.low_stock_threshold, 200)
           THEN true ELSE false
         END AS is_low_stock,
-        ${riskCaseSql} AS risk_level,
+        ${stockOverviewRiskCaseSql} AS risk_level,
         COALESCE(c.avg_daily_consumption, 0) AS avg_daily_consumption,
         CASE
           WHEN COALESCE(c.avg_daily_consumption, 0) > 0
-          THEN ROUND((COALESCE(m.available_quantity, m.stock_quantity, 0)::NUMERIC / c.avg_daily_consumption)::NUMERIC, 1)
+          THEN ROUND((GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0))::NUMERIC / c.avg_daily_consumption)::NUMERIC, 1)
           ELSE NULL
         END AS days_of_coverage,
         COUNT(r.id) FILTER (WHERE r.status NOT IN ('completed','archived','requester_confirmation','waiting_customer_confirmation','cancelled','rejected')) AS active_requests
       FROM materials m
       LEFT JOIN consumption c ON c.material_id = m.id
+      LEFT JOIN active_reserved ar ON ar.material_id = m.id
       LEFT JOIN print_requests r ON r.material_id = m.id
       WHERE m.is_active = true
       GROUP BY m.id, m.name, m.type, m.brand, m.color, m.unit,
                m.stock_quantity, m.available_quantity, m.reserved_quantity, m.low_stock_threshold,
-               c.avg_daily_consumption
+               c.avg_daily_consumption, ar.reserved_qty
       ORDER BY is_low_stock DESC, m.name ASC
     `);
     res.json(result.rows);
@@ -150,11 +176,29 @@ exports.getMaterialStock = async (req, res) => {
   try {
     const { id } = req.params;
     const mat = await db.query(`
+      WITH active_reserved AS (
+        SELECT mr.material_id, COALESCE(SUM(mr.reserved_qty), 0) AS reserved_qty
+        FROM material_reservations mr
+        JOIN print_requests r ON r.id = mr.request_id
+        WHERE mr.status = 'reserved'
+          AND r.status NOT IN (
+            'ready_for_pickup',
+            'requester_confirmation',
+            'waiting_customer_confirmation',
+            'completed',
+            'archived',
+            'cancelled',
+            'rejected'
+          )
+        GROUP BY mr.material_id
+      )
       SELECT
         m.*,
-        COALESCE(m.available_quantity, m.stock_quantity) AS available_quantity,
-        COALESCE(m.reserved_quantity, 0)                 AS reserved_quantity
-      FROM materials m WHERE m.id = $1
+        GREATEST(0, COALESCE(m.stock_quantity, 0) - COALESCE(ar.reserved_qty, 0)) AS available_quantity,
+        COALESCE(ar.reserved_qty, 0) AS reserved_quantity
+      FROM materials m
+      LEFT JOIN active_reserved ar ON ar.material_id = m.id
+      WHERE m.id = $1
     `, [id]);
     if (!mat.rows[0]) return res.status(404).json({ error: 'Material not found' });
 
@@ -163,7 +207,17 @@ exports.getMaterialStock = async (req, res) => {
       SELECT mr.*, r.request_number, r.title
       FROM material_reservations mr
       JOIN print_requests r ON mr.request_id = r.id
-      WHERE mr.material_id = $1 AND mr.status = 'reserved'
+      WHERE mr.material_id = $1
+        AND mr.status = 'reserved'
+        AND r.status NOT IN (
+          'ready_for_pickup',
+          'requester_confirmation',
+          'waiting_customer_confirmation',
+          'completed',
+          'archived',
+          'cancelled',
+          'rejected'
+        )
       ORDER BY mr.created_at DESC
     `, [id]).catch(() => ({ rows: [] }));
 
@@ -226,6 +280,7 @@ exports.adjustStock = async (req, res) => {
        WHERE id = $3`,
       [newStock, newAvail, id]
     );
+    const syncedStock = await syncMaterialReservationStock(client, id);
 
     // Log transaction
     await client.query(`
@@ -260,7 +315,7 @@ exports.adjustStock = async (req, res) => {
       message: `Stock ${qty >= 0 ? 'increased' : 'decreased'} by ${Math.abs(qty)}${m.unit}`,
       previous_stock: currentStock,
       new_stock: newStock,
-      new_available: newAvail,
+      new_available: syncedStock?.available_quantity ?? newAvail,
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -292,26 +347,90 @@ exports.recalculateStock = async (req, res) => {
       });
     }
 
-    // For each material: recalculate reserved from active reservations
-    // and available = stock_quantity - reserved
-    const updated = await client.query(`
-      UPDATE materials m
+    const released = await client.query(`
+      UPDATE material_reservations mr
       SET
-        reserved_quantity  = COALESCE((
-          SELECT SUM(mr.reserved_qty)
-          FROM material_reservations mr
-          WHERE mr.material_id = m.id AND mr.status = 'reserved'
-        ), 0),
-        available_quantity = m.stock_quantity - COALESCE((
-          SELECT SUM(mr.reserved_qty)
-          FROM material_reservations mr
-          WHERE mr.material_id = m.id AND mr.status = 'reserved'
-        ), 0)
-      WHERE m.is_active = true
-      RETURNING id, name, stock_quantity, reserved_quantity, available_quantity
+        status = 'released',
+        released_qty = COALESCE(mr.released_qty, mr.reserved_qty),
+        released_at = COALESCE(mr.released_at, NOW()),
+        notes = COALESCE(mr.notes || E'\n', '') || 'Released during stock recalculation because the request is no longer in active production.'
+      FROM print_requests r
+      WHERE mr.request_id = r.id
+        AND mr.status = 'reserved'
+        AND r.status IN (
+          'ready_for_pickup',
+          'requester_confirmation',
+          'waiting_customer_confirmation',
+          'completed',
+          'archived',
+          'cancelled',
+          'rejected'
+        )
+      RETURNING mr.id, mr.material_id, mr.reserved_qty
     `);
 
-    for (const material of updated.rows) {
+    if (released.rows.length) {
+      const totalReleased = released.rows.reduce((sum, row) => sum + parseFloat(row.reserved_qty || 0), 0);
+      console.log(`[Stock] Recalculate released ${totalReleased}g from ${released.rows.length} stale reservations`);
+    }
+
+    // Recalculate every material from active reservation records only.
+    // Current stock is unchanged; cached available/reserved columns become projections.
+    const updated = await client.query(`
+      WITH active_reserved AS (
+        SELECT mr.material_id, COALESCE(SUM(mr.reserved_qty), 0) AS reserved_qty
+        FROM material_reservations mr
+        JOIN print_requests r ON r.id = mr.request_id
+        WHERE mr.status = 'reserved'
+          AND r.status NOT IN (
+            'ready_for_pickup',
+            'requester_confirmation',
+            'waiting_customer_confirmation',
+            'completed',
+            'archived',
+            'cancelled',
+            'rejected'
+          )
+        GROUP BY mr.material_id
+      )
+      UPDATE materials m
+      SET
+        reserved_quantity = COALESCE(ar.reserved_qty, 0),
+        available_quantity = GREATEST(0, m.stock_quantity - COALESCE(ar.reserved_qty, 0))
+      FROM active_reserved ar
+      WHERE m.id = ar.material_id
+        AND m.is_active = true
+      RETURNING m.id, m.name, m.stock_quantity, m.reserved_quantity, m.available_quantity
+    `);
+
+    const cleared = await client.query(`
+      UPDATE materials m
+      SET
+        reserved_quantity = 0,
+        available_quantity = m.stock_quantity
+      WHERE m.is_active = true
+        AND NOT EXISTS (
+          SELECT 1
+          FROM material_reservations mr
+          JOIN print_requests r ON r.id = mr.request_id
+          WHERE mr.material_id = m.id
+            AND mr.status = 'reserved'
+            AND r.status NOT IN (
+              'ready_for_pickup',
+              'requester_confirmation',
+              'waiting_customer_confirmation',
+              'completed',
+              'archived',
+              'cancelled',
+              'rejected'
+            )
+        )
+      RETURNING m.id, m.name, m.stock_quantity, m.reserved_quantity, m.available_quantity
+    `);
+
+    const recalculatedMaterials = [...updated.rows, ...cleared.rows];
+
+    for (const material of recalculatedMaterials) {
       await checkMaterialLowStock(client, material.id);
     }
 
@@ -319,8 +438,9 @@ exports.recalculateStock = async (req, res) => {
 
     res.json({
       message: 'Stock recalculated successfully',
-      materials_updated: updated.rows.length,
-      results: updated.rows,
+      materials_updated: recalculatedMaterials.length,
+      reservations_released: released.rows.length,
+      results: recalculatedMaterials,
     });
   } catch (err) {
     await client.query('ROLLBACK');

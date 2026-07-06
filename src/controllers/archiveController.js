@@ -111,7 +111,7 @@ exports.archiveRequest = async (req, res) => {
     await consumeMaterialForCompletedRequest(client, {
       request: result.rows[0],
       user: req.user,
-    }).catch(err => console.warn('[Material] Archive consumption warning:', err.message));
+    }).catch(err => console.warn('[Material] Archive reservation release warning:', err.message));
 
     // Status history
     await client.query(`

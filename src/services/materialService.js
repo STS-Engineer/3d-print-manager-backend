@@ -138,6 +138,38 @@ const checkMaterialLowStock = async (client, materialId) => {
   }
 };
 
+const syncMaterialReservationStock = async (client, materialId) => {
+  if (!materialId) return null;
+
+  const result = await client.query(
+    `WITH active_reserved AS (
+       SELECT COALESCE(SUM(mr.reserved_qty), 0) AS reserved_qty
+       FROM material_reservations mr
+       JOIN print_requests r ON r.id = mr.request_id
+       WHERE mr.material_id = $1
+         AND mr.status = 'reserved'
+         AND r.status NOT IN (
+           'ready_for_pickup',
+           'requester_confirmation',
+           'waiting_customer_confirmation',
+           'completed',
+           'archived',
+           'cancelled',
+           'rejected'
+         )
+     )
+     UPDATE materials m
+     SET reserved_quantity = active_reserved.reserved_qty,
+         available_quantity = GREATEST(0, COALESCE(m.stock_quantity, 0) - active_reserved.reserved_qty)
+     FROM active_reserved
+     WHERE m.id = $1
+     RETURNING m.id, m.stock_quantity, m.available_quantity, m.reserved_quantity`,
+    [materialId]
+  );
+
+  return result.rows[0] || null;
+};
+
 const reserveMaterial = async (client, {
   requestId, materialId, spoolReference, reservedQty, performedBy, performedByName,
 }) => {
@@ -160,7 +192,12 @@ const reserveMaterial = async (client, {
     'SELECT available_quantity, reserved_quantity, stock_quantity FROM materials WHERE id = $1 FOR UPDATE',
     [materialId]
   );
-  const m = stockResult.rows[0];
+  await syncMaterialReservationStock(client, materialId);
+  const syncedStock = await client.query(
+    'SELECT available_quantity, reserved_quantity, stock_quantity FROM materials WHERE id = $1',
+    [materialId]
+  );
+  const m = syncedStock.rows[0] || stockResult.rows[0];
   const available = parseFloat(m.available_quantity ?? m.stock_quantity ?? 0);
 
   if (available < qty) {
@@ -182,9 +219,11 @@ const reserveMaterial = async (client, {
        (request_id, material_id, spool_reference, reserved_qty, status,
         reserved_by, reserved_by_name)
      VALUES ($1, $2, $3, $4, 'reserved', $5, $6)
-     ON CONFLICT DO NOTHING`,
+    ON CONFLICT DO NOTHING`,
     [requestId, materialId, spoolReference, qty, performedBy, performedByName]
   ).catch(() => {});
+
+  await syncMaterialReservationStock(client, materialId);
 
   await client.query(
     `INSERT INTO material_transactions
@@ -280,6 +319,7 @@ const consumeMaterial = async (client, {
        WHERE id = $4`,
       [qty, diff, reserved, reservation.material_id]
     );
+    await syncMaterialReservationStock(client, reservation.material_id);
 
     await client.query(
       `INSERT INTO material_transactions
@@ -332,6 +372,7 @@ const consumeMaterial = async (client, {
        WHERE id = $2`,
       [qty, materialId]
     ).catch(() => {});
+    await syncMaterialReservationStock(client, materialId);
 
     await client.query(
       `INSERT INTO material_transactions
@@ -393,6 +434,7 @@ const releaseReservation = async (client, {
      WHERE id = $2`,
     [qty, reservation.material_id]
   ).catch(() => {});
+  await syncMaterialReservationStock(client, reservation.material_id);
 
   await client.query(
     `INSERT INTO material_transactions
@@ -460,15 +502,17 @@ const releaseRemainingReservationAfterProduction = async (client, {
            released_at = NOW(),
            notes = COALESCE(notes || E'\n', '') || $2
        WHERE id = $3`,
-      [qty, 'Released at Completed Awaiting Confirmation; material was already consumed during production.', reservation.id]
-    ).catch(() => {});
+      [qty, 'Released at Completed Awaiting Confirmation; reserved material returned to available stock.', reservation.id]
+    );
 
     await client.query(
       `UPDATE materials
-       SET reserved_quantity = GREATEST(0, COALESCE(reserved_quantity, 0) - $1)
+       SET available_quantity = COALESCE(available_quantity, stock_quantity) + $1,
+           reserved_quantity = GREATEST(0, COALESCE(reserved_quantity, 0) - $1)
        WHERE id = $2`,
       [qty, reservation.material_id]
-    ).catch(() => {});
+    );
+    await syncMaterialReservationStock(client, reservation.material_id);
 
     await client.query(
       `INSERT INTO material_transactions
@@ -482,7 +526,7 @@ const releaseRemainingReservationAfterProduction = async (client, {
         qty,
         performedBy,
         performedByName,
-        'Reservation released at Completed Awaiting Confirmation; no stock was returned or consumed.',
+        'Reservation released at Completed Awaiting Confirmation; reserved material returned to available stock.',
       ]
     ).catch(() => {});
 
@@ -536,27 +580,10 @@ const reserveMaterialForRequestStatus = async (client, {
 };
 
 const consumeMaterialForCompletedRequest = async (client, { request, user }) => {
-  if (!['completed', 'archived'].includes(request.status)) return;
-  if (!request.material_id) return;
+  if (!['ready_for_pickup', 'requester_confirmation', 'completed', 'archived'].includes(request.status)) return;
 
-  const openReservation = await client.query(
-    `SELECT reserved_qty
-     FROM material_reservations
-     WHERE request_id = $1 AND status = 'reserved'
-     ORDER BY reserved_at ASC, id ASC
-     LIMIT 1`,
-    [request.id]
-  ).catch(() => ({ rows: [] }));
-  if (!openReservation.rows[0]) return;
-
-  const reservedQty = parseFloat(openReservation.rows[0].reserved_qty || 0);
-  const qty = reservedQty;
-  if (!qty || qty <= 0) return;
-
-  await consumeMaterial(client, {
+  await releaseRemainingReservationAfterProduction(client, {
     requestId: request.id,
-    materialId: request.material_id,
-    actualConsumedQty: qty,
     performedBy: user?.id || null,
     performedByName: getUserName(user),
   });
@@ -569,5 +596,6 @@ module.exports = {
   releaseRemainingReservationAfterProduction,
   reserveMaterialForRequestStatus,
   consumeMaterialForCompletedRequest,
+  syncMaterialReservationStock,
   checkMaterialLowStock,
 };
