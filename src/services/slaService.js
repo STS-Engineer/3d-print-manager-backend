@@ -44,10 +44,11 @@ const buildOverdueEmail = (req) => ({
  * 4. Stores overdue_notified_at so we do not spam
  */
 const checkOverdueRequests = async () => {
-  const client = await db.getClient();
+  let client;
   const emailJobs = [];
 
   try {
+    client = await db.getClient();
     await client.query('BEGIN');
 
     const overdueResult = await client.query(`
@@ -133,10 +134,14 @@ const checkOverdueRequests = async () => {
 
     console.log(`[SLA] Flagged ${overdueResult.rows.length} overdue request(s).`);
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
     console.error('[SLA] Error checking overdue:', err.message);
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 };
 
@@ -158,8 +163,9 @@ const resetResolvedOverdue = async () => {
 };
 
 const autoCompleteRequesterConfirmations = async () => {
-  const client = await db.getClient();
+  let client;
   try {
+    client = await db.getClient();
     await client.query('BEGIN');
 
     const result = await client.query(`
@@ -218,10 +224,14 @@ const autoCompleteRequesterConfirmations = async () => {
       console.log(`[SLA] Automatically completed ${result.rows.length} requester confirmation request(s).`);
     }
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) {
+      await client.query('ROLLBACK').catch(() => {});
+    }
     console.error('[SLA] Error auto-completing requester confirmations:', err.message);
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 };
 
@@ -232,14 +242,20 @@ const autoCompleteRequesterConfirmations = async () => {
 const startSLAService = () => {
   const INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
-  checkOverdueRequests();
-  resetResolvedOverdue();
-  autoCompleteRequesterConfirmations();
+  const runSafely = (fn, label) => {
+    Promise.resolve()
+      .then(fn)
+      .catch((err) => console.error(`[SLA] Unexpected error in ${label}:`, err.message));
+  };
+
+  runSafely(checkOverdueRequests, 'checkOverdueRequests');
+  runSafely(resetResolvedOverdue, 'resetResolvedOverdue');
+  runSafely(autoCompleteRequesterConfirmations, 'autoCompleteRequesterConfirmations');
 
   setInterval(() => {
-    checkOverdueRequests();
-    resetResolvedOverdue();
-    autoCompleteRequesterConfirmations();
+    runSafely(checkOverdueRequests, 'checkOverdueRequests');
+    runSafely(resetResolvedOverdue, 'resetResolvedOverdue');
+    runSafely(autoCompleteRequesterConfirmations, 'autoCompleteRequesterConfirmations');
   }, INTERVAL_MS);
 
   console.log('[SLA] Overdue monitoring started (every 30 min)');
