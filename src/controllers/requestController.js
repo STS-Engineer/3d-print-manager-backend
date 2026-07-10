@@ -1,4 +1,6 @@
 const db = require('../config/database');
+const fs = require('fs');
+const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { validateTransition } = require('../services/workflowValidation');
 const {
@@ -17,6 +19,7 @@ const {
   getConfiguredRates,
   calculateConfiguredCost,
 } = require('../services/costCalculationService');
+const { uploadDir } = require('../config/uploadStorage');
 
 // Safe user name helper
 const getUserName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.email || 'Unknown User';
@@ -29,6 +32,7 @@ const devLog = (...args) => {
   if (isDev) console.log(...args);
 };
 const nullIfBlank = (value) => value === '' ? null : value;
+const isAdministrator = (user) => user?.role === 'administrator';
 const normalizeRequestPayload = (body = {}) => ({
   ...body,
   category_id: nullIfBlank(body.category_id),
@@ -408,13 +412,21 @@ const getProductionQuantityTotals = async (client, requestId, requestedQuantity)
   };
 };
 
-const generateRequestNumber = async () => {
+const REQUEST_NUMBER_LOCK_NAMESPACE = 303030;
+
+const generateRequestNumber = async (client) => {
   const year = new Date().getFullYear();
-  const result = await db.query(
-    `SELECT COUNT(*) FROM print_requests WHERE EXTRACT(YEAR FROM created_at) = $1`, [year]
+  await client.query('SELECT pg_advisory_xact_lock($1, $2)', [REQUEST_NUMBER_LOCK_NAMESPACE, year]);
+
+  const pattern = `^3DP-${year}-([0-9]+)$`;
+  const result = await client.query(
+    `SELECT COALESCE(MAX(CAST(substring(request_number FROM $1) AS INTEGER)), 0) AS max_sequence
+     FROM print_requests
+     WHERE request_number ~ $2`,
+    [pattern, pattern]
   );
-  const count = parseInt(result.rows[0].count) + 1;
-  return `3DP-${year}-${String(count).padStart(4, '0')}`;
+  const nextSequence = parseInt(result.rows[0].max_sequence, 10) + 1;
+  return `3DP-${year}-${String(nextSequence).padStart(4, '0')}`;
 };
 
 const createStatusHistory = async (client, requestId, fromStatus, toStatus, userId, userName, comment) => {
@@ -800,7 +812,7 @@ exports.createRequest = async (req, res) => {
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    const requestNumber = await generateRequestNumber();
+    const requestNumber = await generateRequestNumber(client);
     const payload = normalizeRequestPayload(req.body);
     devLog('[RequestCreate] Payload:', payload);
     const {
@@ -910,17 +922,26 @@ exports.updateRequest = async (req, res) => {
     const payload = normalizeRequestPayload(req.body);
     devLog('[RequestUpdate] Payload:', { id, payload });
     const existing = await client.query('SELECT * FROM print_requests WHERE id = $1', [id]);
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Not found' });
+    if (!existing.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Not found' });
+    }
 
     const r = existing.rows[0];
     if (req.user.role === 'requester') {
-      if (r.requester_id !== req.user.id)
+      if (r.requester_id !== req.user.id) {
+        await client.query('ROLLBACK');
         return res.status(403).json({ error: 'Access denied' });
-      if (!['draft','more_info_required'].includes(r.status))
+      }
+      if (!isAdministrator(req.user) && !['draft','more_info_required'].includes(r.status)) {
+        await client.query('ROLLBACK');
         return res.status(400).json({ error: `Cannot edit a request with status "${r.status}"` });
+      }
     }
-    if (req.user.role === 'manager')
+    if (req.user.role === 'manager') {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Managers have read-only access' });
+    }
 
     const fields = [
       'title','purpose','part_description','quantity','functional_requirement',
@@ -960,7 +981,10 @@ exports.updateRequest = async (req, res) => {
         return res.status(400).json({ error: 'Invalid site' });
       }
     }
-    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    if (updates.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'No fields to update' });
+    }
 
     // last_edited columns only exist after V4 migration
     let _hasLastEdited = false;
@@ -1409,7 +1433,7 @@ exports.updateStatus = async (req, res) => {
       if (machine_runtime_hours  !== undefined) extraUpdates.machine_runtime_hours  = machine_runtime_hours;
       if (machine_downtime_hours !== undefined) extraUpdates.machine_downtime_hours = machine_downtime_hours;
       if (machine_pause_reason) extraUpdates.machine_pause_reason = machine_pause_reason;
-      if (material_used_grams !== undefined) {
+      {
         const activeReservation = await client.query(
           `SELECT reserved_qty
            FROM material_reservations
@@ -1420,7 +1444,14 @@ exports.updateStatus = async (req, res) => {
         ).catch(() => ({ rows: [] }));
         // Validate vs the current production cycle reservation, not the request's cumulative reservation total.
         const reservedQty = parseFloat(activeReservation.rows[0]?.reserved_qty || r.material_reserved_qty || 0);
-        const consumedQty = parseFloat(material_used_grams);
+        const rawMaterialUsed = material_used_grams;
+        const parsedMaterialUsed = parseFloat(rawMaterialUsed);
+        const hasActualMaterialUsed = rawMaterialUsed !== undefined
+          && rawMaterialUsed !== null
+          && String(rawMaterialUsed).trim() !== ''
+          && Number.isFinite(parsedMaterialUsed)
+          && parsedMaterialUsed > 0;
+        const consumedQty = hasActualMaterialUsed ? parsedMaterialUsed : reservedQty;
         if (reservedQty > 0 && consumedQty > reservedQty * 1.1) {
           // Allow 10% tolerance, block beyond that
           await client.query('ROLLBACK');
@@ -1885,16 +1916,43 @@ exports.addComment = async (req, res) => {
 
 // Delete request
 exports.deleteRequest = async (req, res) => {
+  if (!isAdministrator(req.user)) {
+    return res.status(403).json({ error: 'Only administrators can delete requests' });
+  }
+
+  const client = await db.getClient();
+  const filesToDelete = [];
+  const requestUploadDir = path.resolve(uploadDir, req.params.id);
   try {
+    await client.query('BEGIN');
     const { id } = req.params;
-    const existing = await db.query('SELECT * FROM print_requests WHERE id = $1', [id]);
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Not found' });
-    const r = existing.rows[0];
-    if (req.user.role === 'requester') {
-      if (r.requester_id !== req.user.id || r.status !== 'draft')
-        return res.status(403).json({ error: 'Cannot delete this request' });
+    const existing = await client.query('SELECT * FROM print_requests WHERE id = $1', [id]);
+    if (!existing.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Not found' });
     }
+    const r = existing.rows[0];
+
+    const attachments = await client.query(
+      'SELECT id, file_path FROM request_attachments WHERE request_id = $1',
+      [id]
+    );
+    attachments.rows.forEach((attachment) => {
+      if (!attachment.file_path) return;
+      const resolvedPath = path.resolve(attachment.file_path);
+      if (resolvedPath.startsWith(path.resolve(uploadDir))) filesToDelete.push(resolvedPath);
+    });
+
+    await releaseRemainingReservationAfterProduction(client, {
+      requestId: id,
+      performedBy: req.user.id,
+      performedByName: getUserName(req.user),
+    }).catch((err) => {
+      console.warn('[Material] Delete reservation release warning:', err.message);
+    });
+
     await createAuditLog({
+      client,
       entityType: 'print_request',
       entityId: id,
       action: 'request_deleted',
@@ -1903,9 +1961,51 @@ exports.deleteRequest = async (req, res) => {
       oldValues: r,
       ipAddress: req.headers['x-forwarded-for'] || req.socket?.remoteAddress || null,
     });
-    await db.query('DELETE FROM print_requests WHERE id = $1', [id]);
+
+    const deleteIfPresent = async (sql, params = [id]) => {
+      await client.query(sql, params).catch((err) => {
+        if (!['42P01', '42703'].includes(err.code)) throw err;
+      });
+    };
+    const attachmentIds = attachments.rows.map(a => a.id);
+
+    if (attachmentIds.length) {
+      await deleteIfPresent('DELETE FROM file_validation_logs WHERE attachment_id = ANY($1::uuid[])', [attachmentIds]);
+      await deleteIfPresent('DELETE FROM file_download_logs WHERE attachment_id = ANY($1::uuid[])', [attachmentIds]);
+    }
+    await deleteIfPresent('DELETE FROM file_download_logs WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM request_stl_metadata WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM notification_history WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM notifications WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM request_satisfaction_surveys WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM quality_checks WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM request_production_cycles WHERE request_id = $1');
+    await deleteIfPresent('UPDATE material_transactions SET request_id = NULL, reservation_id = NULL WHERE request_id = $1 OR reservation_id IN (SELECT id FROM material_reservations WHERE request_id = $1)');
+    await deleteIfPresent('DELETE FROM material_reservations WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM request_comments WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM status_history WHERE request_id = $1');
+    await deleteIfPresent('DELETE FROM request_attachments WHERE request_id = $1');
+    await client.query('DELETE FROM print_requests WHERE id = $1', [id]);
+    await client.query('COMMIT');
+
+    for (const filePath of filesToDelete) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+    if (requestUploadDir.startsWith(path.resolve(uploadDir)) && fs.existsSync(requestUploadDir)) {
+      fs.rmSync(requestUploadDir, { recursive: true, force: true });
+    }
+
     res.json({ message: 'Request deleted' });
   } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('[RequestDelete] Failed:', {
+      message: err.message,
+      detail: err.detail,
+      code: err.code,
+      stack: isDev ? err.stack : undefined,
+    });
+    res.status(500).json({ error: publicDbError(err) });
+  } finally {
+    client.release();
   }
 };
