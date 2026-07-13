@@ -289,6 +289,7 @@ const getRequestRows = async (whereClause = '', params = []) => {
       m.name                 AS "Material",
       r.spool_reference      AS "Spool Ref",
       r.material_used_grams  AS "Material Used (g)",
+      r.actual_cost          AS "Actual Cost (€)",
       p.name                 AS "Printer",
       COALESCE(u.first_name||' '||u.last_name,'—') AS "Technician",
       r.requested_due_date   AS "Requested Due",
@@ -347,7 +348,7 @@ const buildRequestExportWhere = (query = {}, baseConditions = []) => {
 };
 
 const DATE_KEYS = ['Requested Due','Approved Due','Planned Start','Started At','Finished At','Completed At','Feedback Submitted','Created'];
-const REQ_COLS  = ['Request ID','Title','Status','Priority','Requester','Department','Category','Criticality','Qty','Material','Spool Ref','Material Used (g)','Printer','Technician','Requested Due','Approved Due','Planned Start','Started At','Finished At','Duration (h)','QC Result','Scraps','Rework','Completed At','Satisfaction','Quality Rating','Delivery Rating','Communication Rating','Fulfillment','Recommendation','Requester Feedback','Feedback Submitted','Feasibility','Project Ref','Created'];
+const REQ_COLS  = ['Request ID','Title','Status','Priority','Requester','Department','Category','Criticality','Qty','Material','Spool Ref','Material Used (g)','Actual Cost (€)','Printer','Technician','Requested Due','Approved Due','Planned Start','Started At','Finished At','Duration (h)','QC Result','Scraps','Rework','Completed At','Satisfaction','Quality Rating','Delivery Rating','Communication Rating','Fulfillment','Recommendation','Requester Feedback','Feedback Submitted','Feasibility','Project Ref','Created'];
 const REQ_KEYS  = REQ_COLS;
 
 // ── KPI Summary data ───────────────────────────────────────────────────────
