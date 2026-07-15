@@ -120,6 +120,134 @@ const notifyActorOfEmailResult = async (client, {
   ).catch((err) => console.error('[Email] Failed to create email result notification:', err.message));
 };
 
+const processRequesterStatusEmailJob = async ({
+  requestId,
+  requesterId,
+  requesterUser,
+  requesterUserId,
+  requesterEmail,
+  requestNumber,
+  status,
+  subject,
+  notificationType,
+  updatedRequest,
+  previousRequest,
+  actorId,
+  infoRequiredReason,
+  comment,
+  rejectionReason,
+}) => {
+  let emailStatus = 'failed';
+  let emailReason = null;
+  let providerMessageId = null;
+
+  try {
+    if (!requesterId) {
+      emailStatus = 'skipped';
+      emailReason = 'missing_requester_id';
+      console.warn('[Email] Requester notification skipped: missing requester_id.', {
+        requestId,
+        requestNumber,
+        status,
+      });
+    } else if (!requesterUser) {
+      emailStatus = 'skipped';
+      emailReason = 'requester_user_not_found';
+      console.warn('[Email] Requester notification skipped: requester user not found.', {
+        requestId,
+        requestNumber,
+        requesterId,
+        status,
+      });
+    } else if (requesterUser.status !== 'Active') {
+      emailStatus = 'skipped';
+      emailReason = 'requester_user_inactive';
+      console.log('[Email] Email skipped for inactive user.', {
+        userId: requesterUser.id,
+        email: requesterEmail || null,
+        notificationType,
+        date: new Date().toISOString(),
+      });
+    } else if (!isValidEmail(requesterEmail)) {
+      emailStatus = 'skipped';
+      emailReason = 'missing_or_invalid_requester_email';
+      console.warn('[Email] Requester notification skipped: requester email missing or invalid.', {
+        requestId,
+        requestNumber,
+        requesterId,
+        recipient: requesterEmail || null,
+        status,
+      });
+    } else {
+      const mailResult = await sendRequesterStatusEmail({
+        status,
+        to: requesterUser,
+        requestNumber,
+        partTitle: updatedRequest.title || previousRequest.title,
+        completionDate: updatedRequest.completion_date || updatedRequest.ready_at || new Date(),
+        requestUrl: buildRequestUrl(requestId),
+        productionComments: infoRequiredReason || comment || updatedRequest.info_required_reason || previousRequest.info_required_reason,
+        rejectionReason: rejectionReason || comment || updatedRequest.rejection_reason || previousRequest.rejection_reason,
+      });
+      emailStatus = getNotificationStatus(mailResult);
+      emailReason = mailResult?.reason || null;
+      providerMessageId = mailResult?.messageId || null;
+
+      if (emailStatus === 'success') {
+        console.log('[Email] Requester notification sent.', {
+          requestId,
+          requestNumber,
+          recipient: requesterEmail,
+          status,
+          messageId: providerMessageId,
+        });
+      } else {
+        console.warn('[Email] Requester notification skipped.', {
+          requestId,
+          requestNumber,
+          recipient: requesterEmail,
+          status,
+          reason: emailReason || 'unknown',
+        });
+      }
+    }
+  } catch (emailErr) {
+    emailStatus = 'failed';
+    emailReason = emailErr.message;
+    console.error('[Email Notification Failed]', {
+      requestId,
+      requestNumber,
+      recipient: requesterEmail,
+      status,
+      reason: emailErr.message,
+    });
+  }
+
+  await recordNotificationHistory(db, {
+    requestId,
+    recipientUserId: requesterUserId,
+    recipientEmail: requesterEmail,
+    type: notificationType,
+    subject,
+    status: emailStatus,
+    reason: emailReason,
+    providerMessageId,
+    metadata: {
+      requestNumber,
+      workflowStatus: status,
+      actorId,
+    },
+  });
+
+  await notifyActorOfEmailResult(db, {
+    actorId,
+    requestId,
+    status: emailStatus,
+    recipientEmail: requesterEmail,
+    reason: emailReason,
+  });
+};
+
 const addNumber = (value) => ({
   __op: 'add_number',
   value,
@@ -1105,7 +1233,10 @@ exports.updateStatus = async (req, res) => {
     devLog('[RequestStatus] Payload:', { id, body: req.body });
 
     const existing = await client.query('SELECT * FROM print_requests WHERE id = $1', [id]);
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Not found' });
+    if (!existing.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Not found' });
+    }
     const r = existing.rows[0];
     const statusChanged = r.status !== status;
 
@@ -1113,6 +1244,7 @@ exports.updateStatus = async (req, res) => {
     const validation = await validateTransition(id, status, req.user.role, req.user.id);
     devLog('[RequestStatus] Validation result:', { id, status, validation });
     if (!validation.valid) {
+      await client.query('ROLLBACK');
       return res.status(validation.code || 400).json({
         error: validation.error,
         validation_type: validation.validation_type,
@@ -1122,20 +1254,28 @@ exports.updateStatus = async (req, res) => {
 
     // ── Permission checks ────────────────────────────────────────────────
     if (req.user.role === 'requester') {
-      if (r.requester_id !== req.user.id)
+      if (r.requester_id !== req.user.id) {
+        await client.query('ROLLBACK');
         return res.status(403).json({ error: 'Access denied' });
+      }
       const requesterAllowed = {
         submitted: ['draft','more_info_required'],
         completed: ['requester_confirmation'],
       };
-      if (!requesterAllowed[status])
+      if (!requesterAllowed[status]) {
+        await client.query('ROLLBACK');
         return res.status(403).json({ error: 'Not allowed' });
-      if (!requesterAllowed[status].includes(r.status))
+      }
+      if (!requesterAllowed[status].includes(r.status)) {
+        await client.query('ROLLBACK');
         return res.status(403).json({ error: `Cannot move to "${status}" from "${r.status}"` });
+      }
     }
 
-    if (req.user.role === 'manager')
+    if (req.user.role === 'manager') {
+      await client.query('ROLLBACK');
       return res.status(403).json({ error: 'Managers cannot change request status' });
+    }
 
     // ── Build extra updates ──────────────────────────────────────────────
     const extraUpdates = {};
@@ -1676,135 +1816,47 @@ exports.updateStatus = async (req, res) => {
     });
 
     // ── Notifications ────────────────────────────────────────────────────
+    let requesterEmailJob = null;
+
     if (statusChanged && REQUESTER_EMAIL_STATUSES.has(status)) {
       const updatedRequest = result.rows[0];
       const requestNumber = updatedRequest.request_number || r.request_number || id;
       const notificationType = `requester_status_${status}`;
       const subject = REQUESTER_STATUS_EMAILS[status]?.subject || '3D Print Request Update';
-      let emailStatus = 'failed';
-      let emailReason = null;
+      let requesterUser = null;
       let requesterEmail = null;
       let requesterUserId = r.requester_id || null;
-      let providerMessageId = null;
 
-      try {
-        if (!r.requester_id) {
-          emailStatus = 'skipped';
-          emailReason = 'missing_requester_id';
-          console.warn('[Email] Requester notification skipped: missing requester_id.', {
-            requestId: id,
-            requestNumber,
-            status,
-          });
-        } else {
-          const requester = await client.query(
-            `SELECT id, email, is_active,
-                    CASE WHEN is_active = true THEN 'Active' ELSE 'Inactive' END AS status
-             FROM users
-             WHERE id = $1`,
-            [r.requester_id]
-          );
-          const requesterUser = requester.rows[0];
-          requesterUserId = requesterUser?.id || r.requester_id;
-          requesterEmail = requesterUser?.email;
-
-          if (!requesterUser) {
-            emailStatus = 'skipped';
-            emailReason = 'requester_user_not_found';
-            console.warn('[Email] Requester notification skipped: requester user not found.', {
-              requestId: id,
-              requestNumber,
-              requesterId: r.requester_id,
-              status,
-            });
-          } else if (requesterUser.status !== 'Active') {
-            emailStatus = 'skipped';
-            emailReason = 'requester_user_inactive';
-            console.log('[Email] Email skipped for inactive user.', {
-              userId: requesterUser.id,
-              email: requesterEmail || null,
-              notificationType,
-              date: new Date().toISOString(),
-            });
-          } else if (!isValidEmail(requesterEmail)) {
-            emailStatus = 'skipped';
-            emailReason = 'missing_or_invalid_requester_email';
-            console.warn('[Email] Requester notification skipped: requester email missing or invalid.', {
-              requestId: id,
-              requestNumber,
-              requesterId: r.requester_id,
-              recipient: requesterEmail || null,
-              status,
-            });
-          } else {
-            const mailResult = await sendRequesterStatusEmail({
-              status,
-              to: requesterUser,
-              requestNumber,
-              partTitle: updatedRequest.title || r.title,
-              completionDate: updatedRequest.completion_date || updatedRequest.ready_at || new Date(),
-              requestUrl: buildRequestUrl(id),
-              productionComments: info_required_reason || comment || updatedRequest.info_required_reason || r.info_required_reason,
-              rejectionReason: rejection_reason || comment || updatedRequest.rejection_reason || r.rejection_reason,
-            });
-            emailStatus = getNotificationStatus(mailResult);
-            emailReason = mailResult?.reason || null;
-            providerMessageId = mailResult?.messageId || null;
-
-            if (emailStatus === 'success') {
-              console.log('[Email] Requester notification sent.', {
-                requestId: id,
-                requestNumber,
-                recipient: requesterEmail,
-                status,
-                messageId: providerMessageId,
-              });
-            } else {
-              console.warn('[Email] Requester notification skipped.', {
-                requestId: id,
-                requestNumber,
-                recipient: requesterEmail,
-                status,
-                reason: emailReason || 'unknown',
-              });
-            }
-          }
-        }
-      } catch (emailErr) {
-        emailStatus = 'failed';
-        emailReason = emailErr.message;
-        console.error('[Email Notification Failed]', {
-          requestId: id,
-          requestNumber,
-          recipient: requesterEmail,
-          status,
-          reason: emailErr.message,
-        });
+      if (r.requester_id) {
+        const requester = await client.query(
+          `SELECT id, email, is_active,
+                  CASE WHEN is_active = true THEN 'Active' ELSE 'Inactive' END AS status
+           FROM users
+           WHERE id = $1`,
+          [r.requester_id]
+        );
+        requesterUser = requester.rows[0] || null;
+        requesterUserId = requesterUser?.id || r.requester_id;
+        requesterEmail = requesterUser?.email || null;
       }
 
-      await recordNotificationHistory(client, {
+      requesterEmailJob = {
         requestId: id,
-        recipientUserId: requesterUserId,
-        recipientEmail: requesterEmail,
-        type: notificationType,
+        requesterId: r.requester_id || null,
+        requesterUser,
+        requesterUserId,
+        requesterEmail,
+        requestNumber,
+        status,
         subject,
-        status: emailStatus,
-        reason: emailReason,
-        providerMessageId,
-        metadata: {
-          requestNumber,
-          workflowStatus: status,
-          actorId: req.user.id,
-        },
-      }, { useSavepoint: true });
-
-      await notifyActorOfEmailResult(client, {
+        notificationType,
+        updatedRequest,
+        previousRequest: r,
         actorId: req.user.id,
-        requestId: id,
-        status: emailStatus,
-        recipientEmail: requesterEmail,
-        reason: emailReason,
-      });
+        infoRequiredReason: info_required_reason,
+        comment,
+        rejectionReason: rejection_reason,
+      };
     }
 
     const notifData = {
@@ -1870,6 +1922,13 @@ exports.updateStatus = async (req, res) => {
 
     await client.query('COMMIT');
     res.json(result.rows[0]);
+
+    if (requesterEmailJob) {
+      setImmediate(() => {
+        processRequesterStatusEmailJob(requesterEmailJob)
+          .catch((err) => console.error('[Email] Post-commit requester email job failed:', err.message));
+      });
+    }
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[RequestStatus] Failed:', {

@@ -89,10 +89,14 @@ exports.archiveRequest = async (req, res) => {
     const existing = await client.query(
       `SELECT * FROM print_requests WHERE id = $1`, [id]
     );
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Request not found' });
+    if (!existing.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Request not found' });
+    }
 
     const r = existing.rows[0];
     if (!['completed', 'requester_confirmation', 'cancelled', 'rejected'].includes(r.status)) {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         error: `Cannot archive a request with status "${r.status}". Only completed, waiting confirmation, cancelled, or rejected requests can be archived.`,
       });
@@ -146,7 +150,10 @@ exports.bulkArchive = async (req, res) => {
   try {
     await client.query('BEGIN');
     const { ids } = req.body;
-    if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids array required' });
+    if (!Array.isArray(ids) || !ids.length) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'ids array required' });
+    }
 
     const before = await client.query(
       `SELECT id, request_number, status

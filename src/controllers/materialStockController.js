@@ -257,6 +257,7 @@ exports.adjustStock = async (req, res) => {
     const { adjustment, reason } = req.body;
 
     if (!adjustment || isNaN(parseFloat(adjustment))) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'adjustment (number) is required' });
     }
 
@@ -265,7 +266,10 @@ exports.adjustStock = async (req, res) => {
     const mat = await client.query(
       'SELECT * FROM materials WHERE id = $1 FOR UPDATE', [id]
     );
-    if (!mat.rows[0]) return res.status(404).json({ error: 'Material not found' });
+    if (!mat.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Material not found' });
+    }
 
     const m = mat.rows[0];
     const currentStock = parseFloat(m.stock_quantity || 0);

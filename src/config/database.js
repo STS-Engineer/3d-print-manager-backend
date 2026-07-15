@@ -23,9 +23,14 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
 
-  max: 30,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+  max: Number(process.env.DB_POOL_MAX || 15),
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS || 10000),
+
+  statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS || 120000),
+  lock_timeout: Number(process.env.DB_LOCK_TIMEOUT_MS || 10000),
+  idle_in_transaction_session_timeout: Number(process.env.DB_IDLE_IN_TX_TIMEOUT_MS || 60000),
+  application_name: process.env.DB_APPLICATION_NAME || `3d-print-manager-${process.env.NODE_ENV || 'local'}`,
 
   ssl: isSSL
     ? { rejectUnauthorized: false } // required for Azure PostgreSQL

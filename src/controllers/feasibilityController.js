@@ -39,7 +39,10 @@ exports.saveFeasibility = async (req, res) => {
 
     // Check request exists
     const reqCheck = await client.query('SELECT id, title FROM print_requests WHERE id = $1', [id]);
-    if (!reqCheck.rows[0]) return res.status(404).json({ error: 'Request not found' });
+    if (!reqCheck.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Request not found' });
+    }
 
     // Upsert feasibility review
     const existing = await client.query(

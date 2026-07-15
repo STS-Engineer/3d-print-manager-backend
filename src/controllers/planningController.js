@@ -376,10 +376,13 @@ exports.updatePlanningDates = async (req, res) => {
               rescheduled_due_date, rescheduled_reason,
               rescheduled_due_date, rescheduled_reason
        FROM print_requests r
-       WHERE r.id = $1`,
+      WHERE r.id = $1`,
       [id]
     );
-    if (!existing.rows[0]) return res.status(404).json({ error: 'Not found' });
+    if (!existing.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Not found' });
+    }
 
     const effectiveStart = planned_start_date || existing.rows[0].planned_start_date;
     const effectiveEnd = planned_end_date || existing.rows[0].planned_end_date;
