@@ -23,7 +23,7 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
 
-  max: Number(process.env.DB_POOL_MAX || 15),
+  max: Number(process.env.DB_POOL_MAX || 30),
   idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 30000),
   connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS || 10000),
 
