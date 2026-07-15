@@ -178,6 +178,17 @@ const buildEntityFilters = (query = {}, mappings = {}, startIndex = 1) => {
   };
 };
 
+const DASHBOARD_QUERY_BATCH_SIZE = 4;
+
+const runBatched = async (tasks, batchSize = DASHBOARD_QUERY_BATCH_SIZE) => {
+  const results = [];
+  for (let i = 0; i < tasks.length; i += batchSize) {
+    const batch = tasks.slice(i, i + batchSize);
+    results.push(...await Promise.all(batch.map((task) => task())));
+  }
+  return results;
+};
+
 // ── Operational Dashboard ─────────────────────────────────────────────────────
 exports.getOperationalDashboard = async (req, res) => {
   try {
@@ -188,10 +199,10 @@ exports.getOperationalDashboard = async (req, res) => {
     const printerEntityFilter = buildEntityFilters(req.query, { printer_id: 'p.id', site_id: 'p.site_id' }, aliasFilter.nextIndex);
     const [openByStatus, prioritySplit, techWorkload, printerWorkload,
            overdue, blocked, deptResult, kpiSummary, operationalCounts,
-           lowStockAlerts, technicianSchedule, printerSchedule] = await Promise.all([
+           lowStockAlerts, technicianSchedule, printerSchedule] = await runBatched([
 
       // Status split — only REAL open statuses
-      db.query(`
+      () => db.query(`
         SELECT status, COUNT(*) AS count
         FROM print_requests
         WHERE ${OPEN_STATUSES}${requestFilter.sql}
@@ -199,7 +210,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Priority split — only open requests
-      db.query(`
+      () => db.query(`
         SELECT priority, COUNT(*) AS count
         FROM print_requests
         WHERE ${OPEN_STATUSES}${requestFilter.sql}
@@ -207,7 +218,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Technician workload — active jobs only
-      db.query(`
+      () => db.query(`
         SELECT u.first_name || ' ' || u.last_name AS name, COUNT(*) AS count
         FROM print_requests r
         JOIN users u ON r.assigned_technician_id = u.id
@@ -219,7 +230,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Printer workload — only active jobs
-      db.query(`
+      () => db.query(`
         SELECT p.name, COUNT(*) AS count
         FROM print_requests r
         JOIN printers p ON r.printer_id = p.id
@@ -230,17 +241,17 @@ exports.getOperationalDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Overdue — open requests past due date
-      db.query(`
+      () => db.query(`
         SELECT COUNT(*) AS count FROM print_requests
         WHERE ${OPEN_STATUSES}${requestFilter.sql}
           AND ${OVERDUE_CONDITION}
       `, requestFilter.params),
 
       // Blocked
-      db.query(`SELECT COUNT(*) AS count FROM print_requests WHERE ${NON_IMPORTED} AND status = 'blocked'${requestFilter.sql}`, requestFilter.params),
+      () => db.query(`SELECT COUNT(*) AS count FROM print_requests WHERE ${NON_IMPORTED} AND status = 'blocked'${requestFilter.sql}`, requestFilter.params),
 
       // Department split — all non-cancelled
-      db.query(`
+      () => db.query(`
         SELECT requester_department AS department, COUNT(*) AS count
         FROM print_requests
         WHERE ${NON_IMPORTED} AND status != 'cancelled'${requestFilter.sql}
@@ -249,7 +260,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // KPI summary counts
-      db.query(`
+      () => db.query(`
         SELECT
           COUNT(*) FILTER (WHERE ${OPEN_STATUSES})                              AS open_count,
           COUNT(*) FILTER (WHERE ${COMPLETED_STATUSES})                         AS completed_count,
@@ -261,7 +272,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Daily operational action counters
-      db.query(`
+      () => db.query(`
         SELECT
           COUNT(*) FILTER (WHERE status IN ('submitted','completeness_check','feasibility_review')) AS awaiting_approval,
           COUNT(*) FILTER (WHERE status = 'requester_confirmation')                                  AS awaiting_requester_confirmation,
@@ -273,7 +284,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Low stock alerts
-      db.query(`
+      () => db.query(`
         SELECT COUNT(*) AS count
         FROM materials
         WHERE COALESCE(available_quantity, stock_quantity, 0) <= COALESCE(low_stock_threshold, 200)
@@ -281,7 +292,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, materialFilter.params),
 
       // Technician schedule
-      db.query(`
+      () => db.query(`
         SELECT
           u.id,
           u.first_name || ' ' || u.last_name AS technician,
@@ -300,7 +311,7 @@ exports.getOperationalDashboard = async (req, res) => {
       `, [...aliasFilter.params, ...technicianEntityFilter.params]),
 
       // Printer schedule
-      db.query(`
+      () => db.query(`
         SELECT
           p.id,
           p.name AS printer,
@@ -359,11 +370,11 @@ exports.getPerformanceDashboard = async (req, res) => {
            materialConsumption, materialByType, printerPerformance,
            technicianPerformance, costTrend, satisfactionSummary,
            satisfactionTrend, satisfactionDistribution, satisfactionBySite,
-           satisfactionByTechnician] = await Promise.all([
+           satisfactionByTechnician] = await runBatched([
 
       // Average lead time — submitted_at → completion_date
       // Include archived (they were completed)
-      db.query(`
+      () => db.query(`
         SELECT
           ROUND(
             AVG(EXTRACT(EPOCH FROM (COALESCE(completion_date, ready_at, actual_end_time) - submitted_at)) / 3600)::NUMERIC,
@@ -378,7 +389,7 @@ exports.getPerformanceDashboard = async (req, res) => {
 
       // On-time delivery: completed on or before approved_due_date (or requested if no approved)
       // Include archived — they were completed
-      db.query(`
+      () => db.query(`
         SELECT
           COUNT(*) FILTER (
             WHERE COALESCE(completion_date, ready_at, actual_end_time) <= COALESCE(approved_due_date, requested_due_date)
@@ -392,14 +403,14 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Completed per week — include archived
-      db.query(`
+      () => db.query(`
         SELECT COUNT(*) AS total
         FROM print_requests
         WHERE ${HISTORICAL_COMPLETED_STATUSES}${requestFilter.sql}
           ${periodSql}
       `, requestFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT
           DATE_TRUNC('week', COALESCE(completion_date, ready_at, actual_end_time))::DATE AS week,
           COUNT(*) AS count
@@ -412,7 +423,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Rework rate - historically completed requests, including archived
-      db.query(`
+      () => db.query(`
         SELECT
           COUNT(*) FILTER (WHERE ${reworkRequestSql('print_requests')}) AS rework_count,
           COUNT(*)                                        AS total
@@ -423,7 +434,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Failed print rate
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(SUM(COALESCE(rejected_quantity, scrap_count, 0)), 0) AS failed_count,
           COALESCE(SUM(GREATEST(COALESCE(printed_quantity, 0) + COALESCE(rejected_quantity, scrap_count, 0), 1)), 0) AS total
@@ -433,7 +444,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Backlog aging — only truly open requests
-      db.query(`
+      () => db.query(`
         SELECT
           CASE
             WHEN created_at > NOW() - INTERVAL '7 days'  THEN '0-7 days'
@@ -449,7 +460,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Technician performance
-      db.query(`
+      () => db.query(`
         WITH technician_cycle_hours AS (
           SELECT
             r.assigned_technician_id,
@@ -492,7 +503,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Rework analysis — cumulative rework cycle data
-      db.query(`
+      () => db.query(`
         SELECT
           COUNT(DISTINCT r.id) AS rework_requests,
           COALESCE(SUM(pc.actual_cost), 0) AS rework_cost,
@@ -509,7 +520,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Material consumption summary
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(SUM(material_used_grams), 0) AS total_material_used,
           ROUND(AVG(material_used_grams) FILTER (WHERE material_used_grams IS NOT NULL)::NUMERIC, 1) AS average_material_per_request
@@ -519,7 +530,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Material consumption by material type
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(m.type, 'Unknown') AS material_type,
           COALESCE(SUM(r.material_used_grams), 0) AS material_used
@@ -533,7 +544,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Printer performance
-      db.query(`
+      () => db.query(`
         WITH cycle_hours AS (
           SELECT
             r.printer_id,
@@ -580,7 +591,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Technician production performance
-      db.query(`
+      () => db.query(`
         WITH managed_requests AS (
           SELECT
             r.assigned_technician_id,
@@ -623,7 +634,7 @@ exports.getPerformanceDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Monthly actual cost trend
-      db.query(`
+      () => db.query(`
         SELECT
           DATE_TRUNC('month', COALESCE(completion_date, ready_at, actual_end_time, created_at))::DATE AS month,
           COALESCE(SUM(actual_cost), 0) AS actual_cost
@@ -634,7 +645,7 @@ exports.getPerformanceDashboard = async (req, res) => {
         ORDER BY month
       `, requestFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT
           ROUND(AVG(s.overall_rating)::NUMERIC, 2) AS average_satisfaction_score,
           ROUND(AVG(s.quality_rating)::NUMERIC, 2) AS average_quality_rating,
@@ -650,7 +661,7 @@ exports.getPerformanceDashboard = async (req, res) => {
           ${hasExplicitDateFilter ? '' : `AND COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at) > NOW() - INTERVAL '${days} days'`}
       `, aliasFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT
           DATE_TRUNC('month', COALESCE(s.created_at, r.completion_date, r.ready_at, r.actual_end_time))::DATE AS month,
           ROUND(AVG(s.overall_rating)::NUMERIC, 2) AS average_satisfaction
@@ -663,7 +674,7 @@ exports.getPerformanceDashboard = async (req, res) => {
         ORDER BY month
       `, aliasFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT rating, COUNT(r.id) AS count
         FROM generate_series(1, 5) rating
         LEFT JOIN request_satisfaction_surveys s ON s.overall_rating = rating
@@ -674,7 +685,7 @@ exports.getPerformanceDashboard = async (req, res) => {
         ORDER BY rating
       `, aliasFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(si.name, 'Unassigned') AS site,
           ROUND(AVG(s.overall_rating)::NUMERIC, 2) AS average_satisfaction,
@@ -688,7 +699,7 @@ exports.getPerformanceDashboard = async (req, res) => {
         ORDER BY average_satisfaction DESC NULLS LAST, responses DESC
       `, aliasFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(u.first_name || ' ' || u.last_name, 'Unassigned') AS technician,
           ROUND(AVG(s.overall_rating)::NUMERIC, 2) AS average_satisfaction,
@@ -773,11 +784,11 @@ exports.getManagementDashboard = async (req, res) => {
     const technicianCapacityHours = Math.max(parseFloat(process.env.RESOURCE_TECHNICIAN_MONTHLY_HOURS || '160') || 0, 0);
     const [demandTrend, topCategories, serviceLevel,
            bottlenecks, productionReviewPerf, costBySite, costByDepartment,
-           costByCategory, capacityOverview, forecast, managementSatisfaction] = await Promise.all([
+           costByCategory, capacityOverview, forecast, managementSatisfaction] = await runBatched([
 
       // Demand vs completion trend — 6 months
       // archived requests count as completed for historical KPIs
-      db.query(`
+      () => db.query(`
         SELECT
           DATE_TRUNC('month', created_at)::DATE                                              AS month,
           COUNT(*)                                                                            AS submitted,
@@ -791,7 +802,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Top categories — all requests (not just open)
-      db.query(`
+      () => db.query(`
         SELECT COALESCE(c.name, 'Uncategorized') AS name, COUNT(*) AS count
         FROM print_requests r
         LEFT JOIN request_categories c ON r.category_id = c.id
@@ -801,7 +812,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Service level — correct open count
-      db.query(`
+      () => db.query(`
         SELECT
           COUNT(*) FILTER (WHERE ${OPEN_STATUSES})         AS open,
           COUNT(*) FILTER (WHERE ${COMPLETED_STATUSES})    AS completed,
@@ -818,7 +829,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Bottlenecks — open requests stuck in waiting states
-      db.query(`
+      () => db.query(`
         SELECT status, COUNT(*) AS count
         FROM print_requests
         WHERE ${NON_IMPORTED}
@@ -831,7 +842,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Production review performance
-      db.query(`
+      () => db.query(`
         SELECT
           ROUND(
             AVG(EXTRACT(EPOCH FROM (approved_at - submitted_at)) / 3600)::NUMERIC, 1
@@ -844,7 +855,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Cost by site
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(s.name, 'Unassigned') AS site,
           COUNT(r.id) AS requests,
@@ -860,7 +871,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Cost by requester department
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(NULLIF(requester_department, ''), 'Unknown') AS department,
           COALESCE(SUM(actual_cost), 0) AS total_cost,
@@ -875,7 +886,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, requestFilter.params),
 
       // Cost by request category
-      db.query(`
+      () => db.query(`
         SELECT
           COALESCE(c.name, 'Other') AS category,
           COALESCE(SUM(r.actual_cost), 0) AS total_cost,
@@ -890,7 +901,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Current capacity overview
-      db.query(`
+      () => db.query(`
         WITH printer_capacity AS (
           SELECT
             COUNT(*) FILTER (WHERE is_active = true) AS total_printers,
@@ -959,7 +970,7 @@ exports.getManagementDashboard = async (req, res) => {
       `, aliasFilter.params),
 
       // Forecast based on monthly averages over the last 6 months
-      db.query(`
+      () => db.query(`
         WITH monthly AS (
           SELECT
             DATE_TRUNC('month', created_at)::DATE AS month,
@@ -980,7 +991,7 @@ exports.getManagementDashboard = async (req, res) => {
         FROM monthly
       `, requestFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT
           ROUND(AVG(s.overall_rating)::NUMERIC, 2) AS customer_satisfaction,
           ROUND(100.0 * COUNT(s.id) FILTER (WHERE s.recommendation_score = 'yes') / NULLIF(COUNT(s.id), 0), 1) AS recommendation_rate,
@@ -1036,8 +1047,8 @@ exports.getResourceDashboard = async (req, res) => {
       materialTrend,
       stockRisk,
       forecast,
-    ] = await Promise.all([
-      db.query(`
+    ] = await runBatched([
+      () => db.query(`
         WITH cycle_hours AS (
           SELECT r.printer_id,
                  COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS print_hours,
@@ -1071,7 +1082,7 @@ exports.getResourceDashboard = async (req, res) => {
         ORDER BY utilization DESC, active_jobs DESC, p.name
       `, [activeStatuses, printerCapacityHours, ...resourceFilter.params, ...resourcePrinterEntityFilter.params]),
 
-      db.query(`
+      () => db.query(`
         WITH cycle_hours AS (
           SELECT r.assigned_technician_id,
                  COALESCE(SUM(${completedCycleHoursSql('r', 'pc')}), 0) AS print_hours,
@@ -1106,7 +1117,7 @@ exports.getResourceDashboard = async (req, res) => {
         ORDER BY utilization DESC, assigned_requests DESC, technician
       `, [activeStatuses, technicianCapacityHours, ...resourceFilter.params, ...resourceTechnicianEntityFilter.params]),
 
-      db.query(`
+      () => db.query(`
         SELECT COALESCE(m.name, 'Unassigned') AS material,
                COALESCE(m.type, 'Unknown') AS material_type,
                COALESCE(SUM(r.material_used_grams), 0) AS consumed
@@ -1121,7 +1132,7 @@ exports.getResourceDashboard = async (req, res) => {
         LIMIT 12
       `, requestFilter.params),
 
-      db.query(`
+      () => db.query(`
         SELECT DATE_TRUNC('month', COALESCE(r.completion_date, r.ready_at, r.actual_end_time, r.created_at))::DATE AS month,
                COALESCE(SUM(r.material_used_grams), 0) AS consumed
         FROM print_requests r
@@ -1132,7 +1143,7 @@ exports.getResourceDashboard = async (req, res) => {
         ORDER BY month
       `, requestFilter.params),
 
-      db.query(`
+      () => db.query(`
         WITH consumption AS (
           SELECT material_id,
                  COALESCE(SUM(material_used_grams), 0) / 90.0 AS avg_daily_consumption
@@ -1166,7 +1177,7 @@ exports.getResourceDashboard = async (req, res) => {
         ORDER BY risk_level DESC, remaining_quantity ASC, days_of_coverage ASC NULLS LAST, m.name
       `, [...requestFilter.params, ...materialFilter.params]),
 
-      db.query(`
+      () => db.query(`
         WITH monthly_demand AS (
           SELECT DATE_TRUNC('month', r.created_at)::DATE AS month,
                  COUNT(*) AS requests,

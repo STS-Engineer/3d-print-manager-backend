@@ -23,7 +23,7 @@ const pool = new Pool({
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
 
-  max: 20,
+  max: 30,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 
@@ -32,15 +32,21 @@ const pool = new Pool({
     : false,
 });
 
-// Logs
-pool.on('connect', () => {
-  console.log('✅ Connected to PostgreSQL database');
-  console.log(`📦 DB: ${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
-});
-
+// IMPORTANT: an idle-client error must NEVER crash the whole server.
+// pg emits 'error' on the pool when a connection that is sitting idle
+// gets dropped by the network/Azure (very common after latency spikes,
+// firewall resets, or DNS hiccups). The pool itself recovers fine on
+// its own by discarding that client and opening a new one on next use.
+// Killing the process here was causing full backend crashes mid-session,
+// which looked like random 401s / connection-refused on the frontend
+// whenever several requests fired in parallel right after login.
 pool.on('error', (err) => {
-  console.error('❌ Unexpected PostgreSQL error on idle client', err);
-  process.exit(-1);
+  console.error('⚠️ Unexpected PostgreSQL error on idle client (pool will recover):', {
+    message: err.message,
+    code: err.code,
+    stack: err.stack,
+  });
+  // Do NOT process.exit here.
 });
 
 // Export helpers
